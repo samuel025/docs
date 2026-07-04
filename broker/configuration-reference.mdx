@@ -1,0 +1,165 @@
+---
+title: "DRMQ Broker Configuration Reference"
+sidebarTitle: "Configuration"
+description: "Complete reference for every CLI flag accepted by the DRMQ broker at startup, including defaults, types, and valid value ranges."
+---
+
+Every DRMQ broker option is configured through command-line arguments passed at startup — there is no separate configuration file. You provide flags as the value of `-Dexec.args` when using the Maven wrapper, or directly after the jar name when running a packaged artifact. Flags you omit fall back to the defaults documented below. The broker validates all values at startup and exits with a descriptive error message if an argument is invalid.
+
+## Passing flags
+
+```bash
+# Using Maven wrapper (development)
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--node-id 1 --port 9092 --data-dir ./data-1 --peers 2:localhost:9093,3:localhost:9094"
+
+# Using a packaged jar (production)
+java -jar drmq-broker.jar \
+  --node-id 1 --port 9092 --data-dir ./data-1 --peers 2:localhost:9093,3:localhost:9094
+```
+
+---
+
+## Node identity
+
+<ParamField path="--node-id" type="string" default="standalone">
+  A unique identifier for this broker node within the cluster. Use the alias `--id` if you prefer a shorter flag. In single-node mode the default value `standalone` is sufficient. In cluster mode every node must have a distinct `--node-id` that matches exactly what the other nodes list in their `--peers` arguments.
+</ParamField>
+
+---
+
+## Network
+
+<ParamField path="--port" type="int" default="9092">
+  The TCP port the broker binds to for client connections. Must be between 1 and 65535. All nodes in a cluster must use different ports if they run on the same host.
+</ParamField>
+
+---
+
+## Storage
+
+<ParamField path="--data-dir" type="string" default="./data">
+  The filesystem path where the broker persists its write-ahead log, message segments, and consumer offset state. The directory is created automatically if it does not exist. Each node in a cluster must have its own dedicated data directory — sharing a directory between nodes corrupts both.
+</ParamField>
+
+<ParamField path="--log-segment-bytes" type="long" default="104857600">
+  The maximum size of a single log segment file in bytes. When the active segment reaches this size the broker rolls it over to a new file. The default is 100 MB (104,857,600 bytes). Must be a positive integer.
+</ParamField>
+
+<ParamField path="--log-retention-ms" type="long" default="604800000">
+  How long the broker retains message segments before deleting them, in milliseconds. The default is 7 days (604,800,000 ms). Segments are eligible for deletion once they are older than this value **and** no longer the active write segment. Must be a positive integer.
+</ParamField>
+
+---
+
+## Cluster and Raft
+
+<ParamField path="--peers" type="string">
+  A comma-separated list of peer broker addresses used to form a Raft cluster. Omitting this flag starts the broker in single-node mode with no Raft replication. Required for cluster mode.
+
+  Each entry follows the format `nodeId:host:port`, for example:
+
+  ```
+  --peers 2:localhost:9093,3:localhost:9094
+  ```
+
+  Do not include the current node's own address in the peer list.
+</ParamField>
+
+<ParamField path="--raft-compact-threshold" type="long" default="1000">
+  The number of committed Raft log entries that accumulates before the broker triggers a log compaction (snapshot). Lower values reduce recovery time after a restart at the cost of more frequent compaction I/O. Must be a positive integer.
+</ParamField>
+
+<Note>
+  The `--peers` flag accepts two formats for each peer descriptor:
+  - **Standard:** `nodeId:host:port` — for example, `2:broker-2.internal:9093`. The `nodeId` must match the `--node-id` of the target peer exactly.
+  - **Legacy:** `host:port` — for example, `broker-2.internal:9093`. In this format the broker uses the host string as the node ID. Prefer the standard format for new deployments.
+</Note>
+
+---
+
+## Dead-Letter Queues
+
+<ParamField path="--max-deliveries" type="int" default="5">
+  The maximum number of times the broker will attempt to deliver a message to a consumer group before routing it to the dead-letter queue (DLQ). A consumer triggers redelivery by calling `nack()`. Once this threshold is reached the message is moved to the DLQ topic and the consumer group advances past it. Must be a positive integer.
+</ParamField>
+
+<ParamField path="--dlq-topic-prefix" type="string" default="dlq.">
+  The string prepended to the topic name when the broker creates a DLQ topic. For example, with the default prefix `dlq.`, poison messages from the topic `orders` in consumer group `processors` are routed to `dlq.processors.orders`. Must not be empty or contain whitespace.
+</ParamField>
+
+---
+
+## Metrics and observability
+
+<ParamField path="--metrics-enabled" type="boolean" default="true">
+  Set to `false` to disable the Prometheus metrics HTTP endpoint entirely. Accepts `true` or `false` (case-insensitive). Use `--metrics-disabled` as a convenience flag instead of `--metrics-enabled false` if you prefer.
+</ParamField>
+
+<ParamField path="--metrics-disabled" type="flag">
+  A standalone boolean flag (no value required) that disables the Prometheus metrics endpoint. Equivalent to `--metrics-enabled false`. Use this when you want to disable metrics with a single argument.
+
+  ```bash
+  ./mvnw -pl drmq-broker exec:java -Dexec.args="--port 9092 --metrics-disabled"
+  ```
+</ParamField>
+
+<ParamField path="--metrics-port" type="int" default="9096">
+  The TCP port on which the broker exposes Prometheus metrics over HTTP. Must be between 1 and 65535 and must not conflict with `--port`. Has no effect if metrics are disabled.
+</ParamField>
+
+<ParamField path="--metrics-path" type="string" default="/metrics">
+  The HTTP path at which Prometheus metrics are served. Must start with `/`, must not contain whitespace, and must not end with `/` (unless it is exactly `/`). Has no effect if metrics are disabled.
+</ParamField>
+
+---
+
+## Full example: production cluster node
+
+The following command starts a single node of a 3-node production cluster with custom retention, compaction, and metrics settings:
+
+```bash
+./mvnw -pl drmq-broker exec:java -Dexec.args="\
+  --node-id 1 \
+  --port 9092 \
+  --data-dir /var/drmq/node-1 \
+  --peers 2:broker-2.prod.internal:9092,3:broker-3.prod.internal:9092 \
+  --log-segment-bytes 209715200 \
+  --log-retention-ms 2592000000 \
+  --raft-compact-threshold 5000 \
+  --max-deliveries 3 \
+  --dlq-topic-prefix dead. \
+  --metrics-port 9096 \
+  --metrics-path /metrics"
+```
+
+This example uses:
+- 200 MB log segments
+- 30-day message retention
+- Raft compaction every 5,000 entries
+- DLQ after 3 failed deliveries
+- Custom DLQ prefix `dead.`
+
+<Tip>
+  Wrap each node's startup command in a `systemd` unit file or container entrypoint so that the broker restarts automatically after a crash. Because DRMQ persists all state to `--data-dir`, a restarted node recovers its log and consumer offsets from disk and rejoins the cluster without data loss.
+</Tip>
+
+---
+
+## Quick-reference table
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--node-id` / `--id` | string | `standalone` | Must be unique per cluster node |
+| `--port` | int | `9092` | Client TCP port |
+| `--data-dir` | string | `./data` | Must be unique per node |
+| `--peers` | string | _(none)_ | Required for cluster mode |
+| `--log-segment-bytes` | long | `104857600` | 100 MB |
+| `--log-retention-ms` | long | `604800000` | 7 days |
+| `--raft-compact-threshold` | long | `1000` | Log entries between snapshots |
+| `--max-deliveries` | int | `5` | Attempts before DLQ routing |
+| `--dlq-topic-prefix` | string | `dlq.` | Prefix for DLQ topic names |
+| `--metrics-enabled` | boolean | `true` | `true` or `false` |
+| `--metrics-disabled` | flag | — | Shorthand for `--metrics-enabled false` |
+| `--metrics-port` | int | `9096` | Prometheus HTTP port |
+| `--metrics-path` | string | `/metrics` | Prometheus HTTP path |

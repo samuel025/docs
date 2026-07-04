@@ -1,0 +1,171 @@
+---
+title: "Monitor DRMQ with Prometheus Metrics"
+sidebarTitle: "Monitoring"
+description: "DRMQ exposes a Prometheus-compatible metrics endpoint via Micrometer. Learn which metrics are available and how to configure scraping."
+---
+
+Every DRMQ broker node ships with a built-in Prometheus metrics endpoint powered by [Micrometer](https://micrometer.io/). Metrics are enabled by default and start serving as soon as the broker starts — no extra instrumentation code required. You can point any Prometheus-compatible scraper at the endpoint and immediately begin tracking throughput, Raft cluster health, log sizes, and request latency.
+
+## Endpoints
+
+| Endpoint | Default URL | Description |
+|---|---|---|
+| Prometheus scrape | `http://localhost:9096/metrics` | Full Prometheus text exposition format |
+| JSON summary | `http://localhost:9096/metrics/summary` | Human-readable JSON snapshot of key gauges and counters |
+
+The summary endpoint is useful for quick health checks from scripts or monitoring dashboards that prefer JSON over the Prometheus text format.
+
+## Metric tags
+
+Every metric is automatically tagged with two labels so you can distinguish nodes in a multi-broker cluster:
+
+| Tag | Description |
+|---|---|
+| `node_id` | The value of `--node-id` (defaults to `standalone`) |
+| `broker_port` | The client-facing port the broker is listening on |
+
+## Available metrics
+
+<CardGroup cols={2}>
+  <Card title="Broker internals" icon="server">
+    Gauges that reflect the live state of the broker process.
+  </Card>
+  <Card title="Raft consensus" icon="sitemap">
+    Gauges and counters that track cluster health and replication.
+  </Card>
+  <Card title="Request throughput" icon="bolt">
+    Counters and timers for produce and consume request traffic.
+  </Card>
+  <Card title="Log storage" icon="hard-drive">
+    Gauges and counters tracking WAL segment sizes and append/read I/O.
+  </Card>
+</CardGroup>
+
+### Broker gauges
+
+| Metric name | Type | Description |
+|---|---|---|
+| `drmq_broker_active_handlers` | Gauge | Number of currently active client handler threads |
+| `drmq_broker_topics` | Gauge | Total number of topics held in the message store |
+| `drmq_broker_cache_total_messages` | Gauge | Total messages currently held in the in-memory cache |
+| `drmq_broker_global_offset` | Gauge | The broker's current global write offset |
+| `drmq_broker_offset_entries` | Gauge | Number of consumer offset entries tracked by the offset manager |
+| `drmq_broker_log_segments` | Gauge | Number of open WAL log segments |
+
+### Raft consensus metrics
+
+| Metric name | Type | Description |
+|---|---|---|
+| `drmq_broker_raft_is_leader` | Gauge | `1.0` if this node is the current Raft leader, `0.0` otherwise |
+| `drmq_broker_raft_commit_index` | Gauge | The highest log index known to be committed in the cluster |
+| `drmq_broker_raft_last_applied` | Gauge | The highest log index applied to the broker's state machine |
+| `drmq_broker_raft_replication_lag` | Gauge | Per-peer replication lag (tagged with `peer_id`); only non-zero on the leader |
+| `drmq_broker_raft_rpc_total` | Counter | Total Raft RPC calls, tagged with `type` and `outcome` (`success`/`error`) |
+| `drmq_broker_raft_rpc_latency` | Timer | Duration of Raft RPC calls, tagged with `type` |
+| `drmq_broker_raft_election_total` | Counter | Total leader elections, tagged with `outcome` (`won`/`lost`) |
+| `drmq_broker_raft_election_duration` | Timer | Duration of each election, tagged with `outcome` |
+
+<Note>
+  `drmq_broker_raft_replication_lag` is emitted per peer and is only meaningful on the leader node. On a follower or candidate the value is always `0.0`. Use this metric to detect a lagging follower before it affects availability.
+</Note>
+
+### Request counters and timers
+
+| Metric name | Type | Tags | Description |
+|---|---|---|---|
+| `drmq_broker_request_total` | Counter | `type`, `outcome` | Total requests by type (`produce`, `consume`, `commit_offset`, `fetch_offset`) and outcome |
+| `drmq_broker_request_latency` | Timer | `type` | End-to-end latency per request type |
+| `drmq_broker_request_bytes` | Counter | `type` | Total bytes transferred per request type |
+| `drmq_broker_request_records` | Counter | `type` | Total records transferred per request type |
+| `drmq_broker_request_errors` | Counter | `type` | Total failed requests per request type |
+
+### Connection metrics
+
+| Metric name | Type | Description |
+|---|---|---|
+| `drmq_broker_connection_opened` | Counter | Total TCP connections opened to this broker |
+| `drmq_broker_connection_closed` | Counter | Total TCP connections closed |
+
+### Log storage metrics
+
+| Metric name | Type | Tags | Description |
+|---|---|---|---|
+| `drmq_broker_log_append_bytes` | Counter | — | Total bytes appended to the WAL |
+| `drmq_broker_log_append_latency` | Timer | — | Latency of WAL append operations |
+| `drmq_broker_log_read_bytes` | Counter | — | Total bytes read from the WAL |
+| `drmq_broker_log_read_latency` | Timer | — | Latency of WAL read operations |
+| `drmq_broker_log_segment_size_bytes` | Gauge | `topic` | Size in bytes of the active log segment per topic |
+| `drmq_broker_offset_persist_total` | Counter | `outcome` | Total offset persistence operations by outcome |
+| `drmq_broker_offset_persist_latency` | Timer | `outcome` | Latency of offset persistence operations |
+
+## Prometheus scrape configuration
+
+Add the following job to your `prometheus.yml` to scrape a single-node broker:
+
+```yaml
+scrape_configs:
+  - job_name: 'drmq'
+    static_configs:
+      - targets: ['localhost:9096']
+```
+
+For a three-node cluster, list all nodes:
+
+```yaml
+scrape_configs:
+  - job_name: 'drmq'
+    static_configs:
+      - targets:
+          - 'broker-1:9096'
+          - 'broker-2:9096'
+          - 'broker-3:9096'
+```
+
+<Note>
+  Metrics are **enabled by default**. You do not need to pass any extra flags to start collecting them. To verify, open `http://localhost:9096/metrics` in your browser or run `curl http://localhost:9096/metrics` after starting the broker.
+</Note>
+
+## Configuration reference
+
+Use these broker startup flags to customise the metrics endpoint:
+
+<ParamField path="--metrics-port" type="int" default="9096">
+  The HTTP port on which the Prometheus metrics endpoint listens. If the configured port is already in use, the broker will automatically try up to 9 consecutive ports (e.g., 9097, 9098, …) before failing.
+</ParamField>
+
+<ParamField path="--metrics-path" type="string" default="/metrics">
+  The HTTP path for the Prometheus scrape endpoint. The JSON summary endpoint is automatically derived as `<metrics-path>/summary`.
+</ParamField>
+
+<ParamField path="--metrics-disabled" type="flag">
+  Pass this flag (no value required) to disable the metrics HTTP server entirely. Alternatively, use `--metrics-enabled false`.
+</ParamField>
+
+**Example — run with metrics on a custom port and path:**
+
+```bash
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--port 9092 --data-dir ./data-1 --metrics-port 8080 --metrics-path /broker/metrics"
+```
+
+**Example — disable metrics entirely:**
+
+```bash
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--port 9092 --data-dir ./data-1 --metrics-disabled"
+```
+
+## Recommended alerts
+
+The table below suggests Prometheus alerting rules based on the available metrics:
+
+| Alert | Expression | Explanation |
+|---|---|---|
+| No leader | `max(drmq_broker_raft_is_leader) == 0` | No node in the cluster believes it is the leader |
+| High replication lag | `drmq_broker_raft_replication_lag > 500` | A follower is more than 500 entries behind the leader |
+| High produce error rate | `rate(drmq_broker_request_errors{type="produce"}[1m]) > 0.05` | More than 5% of produce requests are failing |
+| High consume latency | `drmq_broker_request_latency{type="consume"} > 0.5` | Mean consume latency exceeds 500 ms |
+
+<Tip>
+  Connect Prometheus to **Grafana** to build dashboards from these metrics. Import the `drmq_broker_raft_is_leader` and `drmq_broker_raft_replication_lag` gauges onto a cluster-health panel so you can spot leadership changes and follower lag at a glance. Use `rate(drmq_broker_request_records{type="produce"}[1m])` for a live messages-per-second throughput graph.
+</Tip>

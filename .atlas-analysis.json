@@ -1,0 +1,98 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "DRMQ",
+  "projectDescription": "DRMQ is a fault-tolerant, high-performance distributed message broker with Raft consensus, consumer groups, dead-letter queues, and multi-language client SDKs.",
+  "theme": "luma",
+  "primaryColor": "#8727fc",
+  "lightColor": "#8c51fc",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/topics-and-offsets",
+              "concepts/consumer-groups",
+              "concepts/delivery-guarantees",
+              "concepts/cluster-mode"
+            ]
+          },
+          {
+            "group": "Broker Configuration",
+            "pages": [
+              "broker/single-node",
+              "broker/cluster-setup",
+              "broker/configuration-reference"
+            ]
+          },
+          {
+            "group": "Client SDKs",
+            "pages": [
+              "sdks/java",
+              "sdks/python",
+              "sdks/typescript"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/dead-letter-queues",
+              "features/monitoring",
+              "features/cli"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Consumer groups with automatic load balancing — no partitions required",
+    "Dead-Letter Queues (DLQ) for unprocessable poison-pill messages",
+    "Raft consensus for leader election and log replication",
+    "Persistent Write-Ahead Log (WAL) with segment-based storage",
+    "Follower-based reads for horizontal read scalability",
+    "Automatic producer and consumer failover with bootstrap servers",
+    "Prometheus metrics endpoint via Micrometer",
+    "Multi-language client SDKs: Java, Python, TypeScript",
+    "Interactive CLI for producing and consuming messages",
+    "Single-node and cluster deployment modes"
+  ],
+  "publicApiSurface": [
+    "DRMQProducer(bootstrapServers: String)",
+    "DRMQProducer.connect()",
+    "DRMQProducer.send(topic, payload) -> SendResult",
+    "DRMQProducer.send(topic, message: String) -> SendResult",
+    "DRMQProducer.send(topic, payload, key) -> SendResult",
+    "DRMQProducer.isConnected() -> boolean",
+    "DRMQConsumer(bootstrapServers: String, consumerGroup: String)",
+    "DRMQConsumer.connect()",
+    "DRMQConsumer.setAutoCommit(boolean)",
+    "DRMQConsumer.setGroupMode(boolean)",
+    "DRMQConsumer.subscribe(topic: String)",
+    "DRMQConsumer.subscribe(topic: String, fromOffset: long)",
+    "DRMQConsumer.poll() -> List<ConsumedMessage>",
+    "DRMQConsumer.poll(maxMessages, timeoutMs) -> List<ConsumedMessage>",
+    "DRMQConsumer.commit(topic, offset)",
+    "DRMQConsumer.nack(topic, offset) -> boolean",
+    "DRMQConsumer.getCurrentOffset(topic) -> long",
+    "DRMQProducer (Python): send(topic, payload) -> result",
+    "DRMQConsumer (Python): subscribe(topic), poll(max_messages, timeout_ms)",
+    "DRMQProducer (TypeScript): send(topic, payload, key?) -> ProduceResponse",
+    "DRMQConsumer (TypeScript): subscribe(topic, fromOffset?), poll(maxMessages, timeoutMs), commit(topic, offset), nack(topic, offset)",
+    "Broker CLI: --port, --node-id, --data-dir, --peers, --metrics-port, --log-segment-bytes, --log-retention-ms, --max-deliveries, --dlq-topic-prefix",
+    "Prometheus metrics: drmq_messages_produced_total, drmq_messages_consumed_total, drmq_raft_state, drmq_log_size_bytes",
+    "Consumer CLI: subscribe <topic>, poll, stream, commit, mode group|single, status",
+    "Producer CLI: send <topic> <message>"
+  ]
+}

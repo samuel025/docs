@@ -1,0 +1,313 @@
+---
+title: "DRMQ TypeScript Client SDK Reference"
+sidebarTitle: "TypeScript SDK"
+description: "Produce and consume DRMQ messages from Node.js using the TypeScript SDK, with async/await, auto-failover, and consumer group support."
+---
+
+The DRMQ TypeScript client provides a fully async, promise-based API for producing and consuming messages against a DRMQ broker cluster. It lives in the `drmq-ts-client/` directory of the repository and communicates with the broker using the same raw TCP/Protobuf protocol as the Java and Python SDKs. Both `DRMQProducer` and `DRMQConsumer` extend a shared `DRMQClient` base class that manages socket lifecycle, response demultiplexing, bootstrap-server rotation, and transparent leader redirection.
+
+## Prerequisites
+
+<CardGroup cols={3}>
+  <Card title="Node.js" icon="node-js">
+    Any current LTS release of Node.js. The client uses the built-in `net` module — no native add-ons required.
+  </Card>
+  <Card title="TypeScript" icon="code">
+    Install TypeScript as a dev dependency. The source is fully typed and ships a `tsconfig.json`.
+  </Card>
+  <Card title="protobufjs" icon="box">
+    The Protobuf runtime used to encode and decode broker messages. Install with `npm install protobufjs`.
+  </Card>
+</CardGroup>
+
+## Setup
+
+<Steps>
+  <Step title="Navigate to the client directory">
+    ```bash
+    cd drmq-ts-client
+    ```
+  </Step>
+  <Step title="Install dependencies">
+    ```bash
+    npm install protobufjs
+    npm install --save-dev typescript @types/node
+    ```
+  </Step>
+  <Step title="Build the client">
+    Compile the TypeScript source to JavaScript:
+    ```bash
+    npx tsc
+    ```
+  </Step>
+  <Step title="Import the client in your application">
+    ```typescript
+    import { DRMQProducer, DRMQConsumer } from './client';
+    ```
+  </Step>
+</Steps>
+
+---
+
+## DRMQProducer
+
+`DRMQProducer` opens a persistent TCP connection to a DRMQ broker and sends `Uint8Array` payloads to named topics. Every call to `send()` is fully async. When the broker returns a `NOT_LEADER` redirect, the client reconnects to the reported leader and retries automatically. If the connection drops, it rotates to the next bootstrap server and retries up to five times before throwing `DRMQConnectionError`.
+
+### Constructor
+
+```typescript
+new DRMQProducer(bootstrapServers: string)
+```
+
+Pass a comma-separated string of `host:port` entries. The client picks a random starting entry on construction, providing natural load distribution across cluster nodes.
+
+```typescript
+// Single broker — development
+const producer = new DRMQProducer("localhost:9092");
+
+// Cluster — production
+const producer = new DRMQProducer("broker1:9092,broker2:9093,broker3:9094");
+```
+
+### Methods
+
+<ParamField path="await connect()" type="Promise<void>">
+  Opens the TCP connection to a bootstrap broker. Call this once before any `send()`. Throws `DRMQConnectionError` if no broker is reachable after all retry attempts.
+</ParamField>
+
+<ParamField path="await send(topic: string, payload: Uint8Array, key?: string)" type="Promise<ProduceResponse>">
+  Send `payload` to `topic`. Optionally attach a routing `key`. Returns a `ProduceResponse` — check `.success` before using `.offset`. The client handles leader redirection and connection failover internally.
+</ParamField>
+
+<ParamField path="close()" type="void">
+  Destroys the underlying TCP socket and clears any pending response callbacks. Safe to call at any time.
+</ParamField>
+
+### ProduceResponse fields
+
+<ResponseField name="success" type="boolean">
+  `true` when the broker accepted and durably persisted the message.
+</ResponseField>
+
+<ResponseField name="offset" type="number">
+  The broker-assigned log offset. Only meaningful when `success` is `true`.
+</ResponseField>
+
+<ResponseField name="errorMessage" type="string">
+  A human-readable description of the error when `success` is `false`.
+</ResponseField>
+
+### Producer example
+
+```typescript
+import { DRMQProducer } from './client';
+
+async function main() {
+  const producer = new DRMQProducer("localhost:9092,localhost:9093");
+  await producer.connect();
+
+  try {
+    // Send a plain text message
+    const payload = Buffer.from("Hello from TypeScript!");
+    const res = await producer.send("ts-topic", payload);
+
+    if (res.success) {
+      console.log(`Message persisted at offset ${res.offset}`);
+    } else {
+      console.error(`Send failed: ${res.errorMessage}`);
+    }
+
+    // Send with an optional routing key
+    const orderData = Buffer.from(JSON.stringify({ id: 42, amount: 99.99 }));
+    const keyedRes = await producer.send("orders", orderData, "order-42");
+    console.log(`Keyed send at offset ${keyedRes.offset}`);
+
+  } finally {
+    producer.close();
+  }
+}
+
+main().catch(console.error);
+```
+
+<Tip>
+  Wrap your calls in a `try/finally` block and call `producer.close()` in the `finally` clause so the socket is always released, even when `send()` throws.
+</Tip>
+
+---
+
+## DRMQConsumer
+
+`DRMQConsumer` reads messages from one or more subscribed topics. It supports the same two consumption modes as the Java and Python SDKs:
+
+<CardGroup cols={2}>
+  <Card title="Group Mode" icon="users">
+    Provide a `groupId` at construction. Multiple consumer instances with the same `groupId` share the message stream — the broker partitions delivery with no configuration required. Different groups each receive their own independent copy of every message.
+  </Card>
+  <Card title="Single Consumer Mode" icon="user">
+    Omit `groupId`. The client controls its own offsets and can start from any position, making it ideal for replay, auditing, or ad hoc inspection.
+  </Card>
+</CardGroup>
+
+### Constructor
+
+```typescript
+new DRMQConsumer(bootstrapServers: string, groupId?: string, consumerId?: string)
+```
+
+Providing a `groupId` enables group mode. `consumerId` defaults to `'ts-consumer-1'` — set a unique value when running multiple consumers in the same process.
+
+```typescript
+// Group mode — scale out by running multiple instances with the same groupId
+const consumer = new DRMQConsumer("localhost:9092,localhost:9093", "ts-workers");
+
+// Single consumer mode — full manual offset control
+const consumer = new DRMQConsumer("localhost:9092");
+```
+
+### Methods
+
+<ParamField path="await connect()" type="Promise<void>">
+  Opens a TCP connection to one of the bootstrap brokers. Call before `subscribe()` or `poll()`.
+</ParamField>
+
+<ParamField path="autoCommit" type="boolean (property)">
+  Set to `true` to commit the offset of the last message in each `poll()` batch automatically. Defaults to `false`. Assign directly: `consumer.autoCommit = true`.
+</ParamField>
+
+<ParamField path="await subscribe(topic: string, fromOffset?: number)" type="Promise<void>">
+  Register interest in `topic`. In group mode, the broker manages offsets (pass `fromOffset` to override). In single mode, `fromOffset` sets the starting position; if omitted, the client fetches the last committed offset from the broker.
+</ParamField>
+
+<ParamField path="await poll(maxMessages?: number, timeoutMs?: number)" type="Promise<StoredMessage[]>">
+  Fetch up to `maxMessages` (default `100`) from each subscribed topic. The broker waits up to `timeoutMs` (default `1000`) milliseconds before returning an empty array. Returns a flat `StoredMessage[]` across all subscribed topics.
+</ParamField>
+
+<ParamField path="await commit(topic: string, nextOffset: number)" type="Promise<void>">
+  Commit `nextOffset` to the broker for `topic`. The broker delivers messages starting at `nextOffset` to this group on the next poll.
+</ParamField>
+
+<ParamField path="await nack(topic: string, offset: number)" type="Promise<boolean>">
+  Explicitly reject a message at `offset`. Returns `true` if the broker moved it to the dead-letter queue (`dlq.<groupId>.<topic>`), or `false` if it was requeued for redelivery. Throws `Error` in single-consumer mode.
+</ParamField>
+
+<ParamField path="close()" type="void">
+  Destroys the TCP socket and flushes any pending callbacks.
+</ParamField>
+
+### StoredMessage fields
+
+<ResponseField name="offset" type="number">
+  The broker-assigned log position of the message.
+</ResponseField>
+
+<ResponseField name="topic" type="string">
+  The topic the message was read from.
+</ResponseField>
+
+<ResponseField name="payload" type="Uint8Array">
+  Raw message bytes. Convert to a string with `Buffer.from(msg.payload).toString('utf-8')`.
+</ResponseField>
+
+<ResponseField name="key" type="string | undefined">
+  Optional routing key set by the producer.
+</ResponseField>
+
+<ResponseField name="timestamp" type="number">
+  Producer-set timestamp in milliseconds since epoch.
+</ResponseField>
+
+---
+
+### Consumer examples
+
+<Tabs>
+  <Tab title="Group mode (auto-commit)">
+    Start multiple Node.js processes with the same `groupId`. The broker distributes messages across all live consumers — no partitions or topic configuration needed.
+
+    ```typescript
+    import { DRMQConsumer } from './client';
+
+    async function main() {
+      const consumer = new DRMQConsumer("localhost:9092,localhost:9093", "ts-workers");
+      consumer.autoCommit = true;
+      await consumer.connect();
+      await consumer.subscribe("ts-topic");
+
+      const messages = await consumer.poll(10, 5000);
+      for (const msg of messages) {
+        console.log(`Received (offset ${msg.offset}): ${Buffer.from(msg.payload).toString('utf-8')}`);
+      }
+
+      consumer.close();
+    }
+
+    main().catch(console.error);
+    ```
+
+    <Note>
+      Make your processing logic idempotent when using `autoCommit`. If the process exits after processing but before the commit resolves, the broker redelivers those messages to the next consumer in the group.
+    </Note>
+  </Tab>
+  <Tab title="Manual commit">
+    Commit only after each message is successfully processed to achieve at-least-once delivery with full control over when the offset advances.
+
+    ```typescript
+    import { DRMQConsumer } from './client';
+
+    async function main() {
+      const consumer = new DRMQConsumer("localhost:9092,localhost:9093", "order-processors");
+      await consumer.connect();
+      await consumer.subscribe("orders");
+
+      while (true) {
+        const messages = await consumer.poll(50, 2000);
+        for (const msg of messages) {
+          try {
+            await processOrder(msg.payload);                  // your business logic
+            await consumer.commit("orders", msg.offset + 1); // advance on success
+          } catch (err) {
+            console.error(`Processing failed at offset ${msg.offset}:`, err);
+            const routedToDlq = await consumer.nack("orders", msg.offset);
+            if (routedToDlq) {
+              console.warn(`Poison pill moved to DLQ: offset ${msg.offset}`);
+            }
+          }
+        }
+      }
+    }
+
+    main().catch(console.error);
+    ```
+  </Tab>
+  <Tab title="Single mode (replay)">
+    Omit `groupId` and pass `fromOffset: 0` to `subscribe()` to replay the entire topic log from the beginning.
+
+    ```typescript
+    import { DRMQConsumer } from './client';
+
+    async function main() {
+      const consumer = new DRMQConsumer("localhost:9092"); // no groupId → single mode
+      await consumer.connect();
+
+      // Start from the very beginning of the log
+      await consumer.subscribe("audit-log", 0);
+
+      while (true) {
+        const messages = await consumer.poll(100, 1000);
+        for (const msg of messages) {
+          console.log(
+            `Replaying offset ${msg.offset}: ${Buffer.from(msg.payload).toString('utf-8')}`
+          );
+        }
+      }
+    }
+
+    main().catch(console.error);
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  `nack()` throws an `Error` when called without a `groupId`. Dead-letter routing is a broker-coordinated feature and is only available in group mode.
+</Warning>

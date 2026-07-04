@@ -1,0 +1,254 @@
+---
+title: "DRMQ Interactive CLI for Testing and Debugging"
+sidebarTitle: "CLI"
+description: "Use DRMQ's interactive producer and consumer CLIs to send messages, subscribe to topics, and test load balancing directly from your terminal."
+---
+
+DRMQ ships with two interactive command-line applications — a producer CLI and a consumer CLI — that let you interact with a running broker without writing any application code. Both tools are bundled inside the `drmq-client` module and accept a comma-separated list of bootstrap servers so they automatically failover to a healthy node in your cluster. Use them to test new topics, inspect offsets, verify load balancing, or reproduce issues during local development.
+
+<Note>
+  The CLI tools are intended for **local development and debugging only**. They are not designed to be used as production clients. For production workloads, use the Java, Python, or TypeScript SDKs directly.
+</Note>
+
+## Prerequisites
+
+Build the project before running either CLI:
+
+```bash
+mvn clean install
+```
+
+---
+
+## Producer CLI
+
+The producer CLI lets you send messages to any topic interactively. Once connected, type commands at the `producer>` prompt.
+
+### Launch
+
+```bash
+cd drmq-client
+mvn exec:java -Dexec.mainClass="com.drmq.client.commandLineExample.ProducerApp" \
+  -Dexec.args="localhost:9092,localhost:9093"
+```
+
+Pass a single broker address for a standalone node, or a comma-separated list for a cluster. The client picks a server at random on startup and automatically reconnects to the next node if the current one becomes unavailable.
+
+### Commands
+
+<ParamField path="send <topic> <message>" type="command">
+  Send a message to the specified topic. Everything after the topic name is treated as the message body, including spaces.
+
+  ```
+  producer> send orders Book Order #101
+  ✓ Sent to [orders] at offset 4
+
+  producer> send payments Payment of ₦25.50
+  ✓ Sent to [payments] at offset 0
+  ```
+</ParamField>
+
+<ParamField path="help" type="command">
+  Print the list of available commands.
+</ParamField>
+
+<ParamField path="exit" type="command">
+  Disconnect from the broker and quit the CLI. `quit` is accepted as an alias.
+</ParamField>
+
+---
+
+## Consumer CLI
+
+The consumer CLI lets you subscribe to topics, fetch messages, commit offsets, and switch consumption modes — all interactively. Once connected, type commands at the `consumer[<group>]>` prompt.
+
+### Launch
+
+```bash
+cd drmq-client
+mvn exec:java -Dexec.mainClass="com.drmq.client.commandLineExample.ConsumerApp" \
+  -Dexec.args="localhost:9092,localhost:9093 my-consumer-group"
+```
+
+The first argument is the comma-separated bootstrap servers list. The second argument is the consumer group name (defaults to `default` if omitted). Providing a group name automatically enables **group mode**, where the broker coordinates offset delivery across all consumers sharing that group.
+
+### Commands
+
+<ParamField path="subscribe <topic> [offset]" type="command">
+  Subscribe to a topic. Without an offset, the consumer resumes from the last broker-committed offset for this group. Pass an explicit offset to seek to a specific position.
+
+  ```
+  consumer[my-consumer-group]> subscribe orders
+  ✓ Subscribed to [orders] (resuming from broker offset 5)
+
+  consumer[my-consumer-group]> subscribe payments 0
+  ✓ Subscribed to [payments] from explicit offset 0
+  ```
+
+  `sub` is accepted as a shorthand alias for `subscribe`.
+</ParamField>
+
+<ParamField path="poll [max] [timeout_ms]" type="command">
+  Fetch one batch of messages from all subscribed topics. `max` limits the number of messages returned (default `100`). `timeout_ms` sets the long-poll wait: the broker holds the connection open for up to that many milliseconds if no messages are immediately available (default `1000`). Pass `0` for a short poll that returns immediately.
+
+  ```
+  consumer[my-consumer-group]> poll
+  Long-polling (waiting up to 1000ms for messages)...
+    Received 2 message(s):
+
+    ┌─ [orders] Offset: 5
+    │  Message: Book Order #101
+    │  Timestamp: 1718000000000
+    └─
+    ┌─ [orders] Offset: 6
+    │  Message: Book Order #102
+    │  Timestamp: 1718000001000
+    └─
+
+  consumer[my-consumer-group]> poll 50 2000
+  Long-polling (waiting up to 2000ms for messages)...
+
+  consumer[my-consumer-group]> poll 100 0
+  Polling for messages...
+    No new messages
+  ```
+</ParamField>
+
+<ParamField path="stream [timeout_ms]" type="command">
+  Enter continuous streaming mode: the CLI polls in a tight loop and prints every message as it arrives. `timeout_ms` controls the long-poll wait per iteration (default `2000`). Press **Ctrl+C** to stop.
+
+  ```
+  consumer[my-consumer-group]> stream
+  📡 Streaming... (press Ctrl+C to stop) [auto-commit=off]
+
+    ┌─ [orders] Offset: 7
+    │  Message: Book Order #103
+    │  Timestamp: 1718000002000
+    └─
+  ```
+</ParamField>
+
+<ParamField path="commit <topic> [offset]" type="command">
+  Commit the current offset for a topic to the broker. Without an explicit offset, the CLI commits the offset of the last message it received. Use an explicit value to seek the group to a specific position.
+
+  ```
+  consumer[my-consumer-group]> commit orders
+  ✓ Committed offset 7 for topic 'orders'
+
+  consumer[my-consumer-group]> commit orders 3
+  ✓ Committed offset 3 for topic 'orders'
+  ```
+</ParamField>
+
+<ParamField path="autocommit on|off" type="command">
+  Enable or disable automatic offset commits after each `poll`. When on, the CLI commits the offset of the last received message immediately after every poll call without requiring a separate `commit` command.
+
+  ```
+  consumer[my-consumer-group]> autocommit on
+  ✓ Auto-commit enabled
+  ```
+</ParamField>
+
+<ParamField path="mode group|single" type="command">
+  Switch between consumption modes at runtime without restarting the CLI.
+
+  - `group` — the broker coordinates offset dispatch across all consumers in the group (default when a group name is provided).
+  - `single` — the consumer manages its own offsets locally; useful for replaying messages from a specific offset.
+
+  ```
+  consumer[my-consumer-group]> mode single
+  ✓ Switched to single mode (client manages offsets)
+
+  consumer[my-consumer-group]> mode group
+  ✓ Switched to group mode (broker coordinates offsets)
+  ```
+</ParamField>
+
+<ParamField path="status" type="command">
+  Print the current consumer state: group name, consumer ID, active mode, and auto-commit setting.
+
+  ```
+  consumer[my-consumer-group]> status
+
+  Group: my-consumer-group
+  Consumer ID: a3f2c1d0-…
+  ─────────────────────────────
+  Group mode:  on (broker coordinates)
+  Auto-commit: off
+  ```
+</ParamField>
+
+<ParamField path="help" type="command">
+  Print the full command reference with examples.
+</ParamField>
+
+<ParamField path="exit" type="command">
+  Disconnect and quit. `quit` is accepted as an alias.
+</ParamField>
+
+---
+
+## Walkthrough: send and receive your first message
+
+<Steps>
+  <Step title="Start the broker">
+    ```bash
+    ./mvnw -pl drmq-broker exec:java -Dexec.args="--port 9092 --data-dir ./data-1"
+    ```
+  </Step>
+
+  <Step title="Open a consumer terminal">
+    ```bash
+    cd drmq-client
+    mvn exec:java -Dexec.mainClass="com.drmq.client.commandLineExample.ConsumerApp" \
+      -Dexec.args="localhost:9092 my-group"
+    ```
+
+    Subscribe and start streaming:
+
+    ```
+    consumer[my-group]> subscribe greetings
+    consumer[my-group]> stream
+    📡 Streaming... (press Ctrl+C to stop) [auto-commit=off]
+    ```
+  </Step>
+
+  <Step title="Open a producer terminal">
+    ```bash
+    cd drmq-client
+    mvn exec:java -Dexec.mainClass="com.drmq.client.commandLineExample.ProducerApp" \
+      -Dexec.args="localhost:9092"
+    ```
+
+    Send a message:
+
+    ```
+    producer> send greetings Hello, DRMQ!
+    ✓ Sent to [greetings] at offset 0
+    ```
+
+    Switch back to the consumer terminal — the message appears immediately.
+  </Step>
+</Steps>
+
+---
+
+## Testing load balancing
+
+<Tip>
+  Open **two or more consumer terminal windows**, each running the Consumer CLI with the **same group name**. Subscribe all of them to the same topic, then send a burst of messages from the Producer CLI. The broker distributes each message to exactly one consumer in the group, so you can observe load balancing in real time without writing any code.
+</Tip>
+
+**Terminal A:**
+```bash
+mvn exec:java -Dexec.mainClass="com.drmq.client.commandLineExample.ConsumerApp" \
+  -Dexec.args="localhost:9092 load-test-group"
+```
+
+**Terminal B:**
+```bash
+mvn exec:java -Dexec.mainClass="com.drmq.client.commandLineExample.ConsumerApp" \
+  -Dexec.args="localhost:9092 load-test-group"
+```
+
+Subscribe both to the same topic (`subscribe events`) and run `stream` in each. Then from the producer CLI, send several messages to `events` and watch them split between the two consumers.

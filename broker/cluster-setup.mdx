@@ -1,0 +1,138 @@
+---
+title: "Set Up a DRMQ Cluster for High Availability"
+sidebarTitle: "Cluster Setup"
+description: "Deploy a 3-node DRMQ cluster with Raft consensus so your message broker survives individual node failures without losing committed messages."
+---
+
+A DRMQ cluster uses the Raft consensus algorithm to replicate every committed message to a quorum of nodes before acknowledging the write to the producer. When a node fails, the remaining nodes elect a new leader automatically and clients reconnect without intervention. Running at least three nodes is the recommended minimum for production: a 3-node cluster tolerates the loss of any single node while still maintaining a write quorum.
+
+## Prerequisites
+
+Before you start, make sure each machine or process that will run a broker node has:
+
+- **Java 17 or higher** — check with `java -version`
+- **Maven 3.8.x or higher** — check with `mvn -version`
+- **The DRMQ repository** — built once from the root with `mvn clean install`
+- **Network connectivity** between all peer nodes on the ports you choose
+- **A separate data directory** per node — nodes must never share a data directory
+
+<Warning>
+  Never point two broker nodes at the same `--data-dir`. Each node maintains its own write-ahead log and Raft state. Sharing a directory will corrupt both nodes.
+</Warning>
+
+## Start the cluster
+
+<Steps>
+  <Step title="Start Node 1">
+    Open a terminal on the first machine (or in the first process) and run:
+
+    ```bash
+    ./mvnw -pl drmq-broker exec:java \
+      -Dexec.args="--node-id 1 --port 9092 --data-dir ./data-1 --peers 2:localhost:9093,3:localhost:9094"
+    ```
+
+    Node 1 listens on port `9092` and knows about its two peers: node 2 on `9093` and node 3 on `9094`. The broker will wait for a Raft quorum before accepting writes, so keep this terminal open and proceed to the next step.
+  </Step>
+
+  <Step title="Start Node 2">
+    Open a second terminal and run:
+
+    ```bash
+    ./mvnw -pl drmq-broker exec:java \
+      -Dexec.args="--node-id 2 --port 9093 --data-dir ./data-2 --peers 1:localhost:9092,3:localhost:9094"
+    ```
+
+    Once Node 2 joins, the cluster has two of the three required members. Raft can now elect a leader as soon as the third node connects.
+  </Step>
+
+  <Step title="Start Node 3">
+    Open a third terminal and run:
+
+    ```bash
+    ./mvnw -pl drmq-broker exec:java \
+      -Dexec.args="--node-id 3 --port 9094 --data-dir ./data-3 --peers 1:localhost:9092,2:localhost:9093"
+    ```
+
+    With all three nodes running, the cluster reaches quorum. You will see one node log that it has become the Raft leader. The cluster is now ready to accept client connections.
+  </Step>
+
+  <Step title="Verify cluster health">
+    Check the startup logs of all three nodes. The elected leader will print a log line similar to:
+
+    ```text
+    INFO  c.d.b.r.RaftNode - Cluster mode: nodeId=1, peers=[2@localhost:9093, 3@localhost:9094]
+    INFO  c.d.b.BrokerServer - DRMQ Broker started on port 9092 with data directory ./data-1
+    ```
+
+    Each follower will log that it has acknowledged the leader's authority through Raft heartbeats.
+  </Step>
+
+  <Step title="Connect clients with all bootstrap addresses">
+    Pass all three node addresses to your client as a comma-separated bootstrap list. The client connects to the list, discovers the current leader, and routes writes to it automatically:
+
+    ```java
+    // Java producer — bootstraps from any cluster node
+    DRMQProducer producer = new DRMQProducer("localhost:9092,localhost:9093,localhost:9094");
+    producer.connect();
+    DRMQProducer.SendResult result = producer.send("orders", "order-payload");
+
+    if (result.isSuccess()) {
+        System.out.println("Committed at offset " + result.getOffset());
+    }
+    ```
+
+    ```python
+    # Python producer — same bootstrap string
+    from drmq_client import DRMQProducer
+
+    producer = DRMQProducer("localhost:9092,localhost:9093,localhost:9094")
+    producer.connect()
+    result = producer.send("orders", b"order-payload")
+    print(f"Committed at offset {result.offset}")
+    ```
+
+    <Tip>
+      Consumers can read from follower nodes, distributing read load across the cluster. Include all node addresses in the consumer bootstrap string for the same automatic failover behavior.
+    </Tip>
+  </Step>
+</Steps>
+
+## Understanding the `--peers` flag
+
+The `--peers` value is a comma-separated list of peer descriptors. Each descriptor follows the format:
+
+```
+nodeId:host:port
+```
+
+| Field | Description |
+|---|---|
+| `nodeId` | The `--node-id` value of the peer. Must match exactly. |
+| `host` | The hostname or IP address the peer listens on. |
+| `port` | The TCP port the peer listens on. |
+
+For example, `2:localhost:9093` tells the broker that the peer with `--node-id 2` is reachable at `localhost:9093`. Every node lists all **other** nodes as peers — do not include the node itself.
+
+<Note>
+  A 3-node cluster can tolerate the failure of **1 node** and still maintain quorum (2 of 3 nodes). To tolerate 2 simultaneous failures you need at least 5 nodes. Raft requires a strict majority (`floor(n/2) + 1`) of nodes to be reachable to commit writes.
+</Note>
+
+## What happens when the leader fails
+
+When the leader node becomes unavailable, the remaining followers detect the missing heartbeat and begin a Raft leader election. The election completes within a few election-timeout intervals (typically milliseconds to low seconds depending on network conditions). Once a new leader is elected:
+
+1. The new leader begins accepting writes immediately.
+2. Clients that were connected to the old leader receive a connection error and automatically reconnect to a different bootstrap address.
+3. The client transparently retries the failed request against the new leader.
+4. Any message that received a successful `SendResult` from the old leader before it failed was already replicated to a quorum and is guaranteed to be present in the new leader's log.
+
+No manual intervention is required. Client code does not need to handle the failover explicitly.
+
+<Tip>
+  Each node must have its own `--data-dir`. Using separate directories on the same machine (for example, `./data-1`, `./data-2`, `./data-3`) is fine for testing. In production, use separate hosts or at minimum separate disks so that a single hardware failure cannot take down all nodes at once.
+</Tip>
+
+## Next steps
+
+- Read the [Configuration Reference](/broker/configuration-reference) to tune log retention, Raft compaction, metrics export, and DLQ behaviour for your production workload.
+- See the [Single-Node guide](/broker/single-node) if you need a quick local setup for development or testing.

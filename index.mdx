@@ -1,20 +1,89 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "DRMQ: Distributed Reliable Message Queue"
+sidebarTitle: "Home"
+description: "DRMQ is a fault-tolerant, high-performance distributed message broker with Raft consensus, consumer groups, dead-letter queues, and multi-language SDKs."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+DRMQ is a distributed message broker built for guaranteed delivery, strict ordering, and high availability. It uses the Raft consensus algorithm to keep your cluster coordinated and your messages safe — even when nodes fail. Whether you're running a single node for development or a three-node production cluster, DRMQ gives you scalable consumer groups, dead-letter queues, and native clients in Java, Python, and TypeScript.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Send your first message in minutes with the Java client.
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Build DRMQ from source and start your first broker.
+  </Card>
+  <Card title="Core Concepts" icon="book-open" href="/concepts/topics-and-offsets">
+    Understand topics, offsets, consumer groups, and delivery semantics.
+  </Card>
+  <Card title="Client SDKs" icon="code" href="/sdks/java">
+    Integrate with Java, Python, or TypeScript clients.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What You Can Build
+
+DRMQ is designed for use cases where message reliability and ordering matter:
+
+- **Event-driven microservices** — decouple producers and consumers with at-least-once delivery guarantees
+- **Work queues** — distribute jobs across multiple workers using consumer groups, no partitions required
+- **Audit logs** — persist ordered message streams with configurable retention
+- **Replay pipelines** — rewind and replay messages from any offset with single-consumer mode
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Consumer Groups" icon="users" href="/concepts/consumer-groups">
+    Load-balance messages across multiple consumers without partitions. Add workers dynamically.
+  </Card>
+  <Card title="Dead-Letter Queues" icon="circle-exclamation" href="/features/dead-letter-queues">
+    Automatically route poison-pill messages to a DLQ after configurable retry failures.
+  </Card>
+  <Card title="Cluster Mode" icon="network-wired" href="/concepts/cluster-mode">
+    Run a Raft-based cluster for high availability and automatic leader election.
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/features/monitoring">
+    Expose Prometheus metrics for throughput, Raft state, and log size.
+  </Card>
+</CardGroup>
+
+## Get Started
+
+<Steps>
+  <Step title="Build DRMQ">
+    Clone the repository and build all modules with Maven.
+    ```bash
+    git clone https://github.com/samuel025/DRMQ.git
+    cd DRMQ
+    mvn clean install
+    ```
+  </Step>
+  <Step title="Start the broker">
+    Launch a single-node broker on port 9092.
+    ```bash
+    ./mvnw -pl drmq-broker exec:java -Dexec.args="--port 9092 --data-dir ./data-1"
+    ```
+  </Step>
+  <Step title="Send a message">
+    Use the Java client to produce your first message.
+    ```java
+    try (DRMQProducer producer = new DRMQProducer("localhost:9092")) {
+        producer.connect();
+        DRMQProducer.SendResult result = producer.send("my-topic", "Hello, DRMQ!");
+        System.out.println("Sent at offset " + result.getOffset());
+    }
+    ```
+  </Step>
+  <Step title="Consume messages">
+    Subscribe and poll for messages with the consumer client.
+    ```java
+    try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group")) {
+        consumer.setAutoCommit(true);
+        consumer.connect();
+        consumer.subscribe("my-topic");
+        List<DRMQConsumer.ConsumedMessage> msgs = consumer.poll(100, 1000);
+        msgs.forEach(m -> System.out.println(m.payloadAsString()));
+    }
+    ```
+  </Step>
+</Steps>

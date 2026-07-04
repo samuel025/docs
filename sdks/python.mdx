@@ -1,0 +1,269 @@
+---
+title: "DRMQ Python Client SDK Reference"
+sidebarTitle: "Python SDK"
+description: "Produce and consume DRMQ messages from Python using DRMQProducer and DRMQConsumer, with built-in leader failover and group-mode support."
+---
+
+The DRMQ Python client lets you send and receive messages using the same TCP/Protobuf protocol as the Java SDK. It lives in the `drmq-python-client/` directory of the DRMQ repository and requires no external broker-specific package — only the standard `protobuf` library. Both `DRMQProducer` and `DRMQConsumer` inherit from a shared `DRMQClient` base that manages connection pooling, bootstrap-server rotation, and transparent leader redirection so your code stays clean.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Python 3.x" icon="python">
+    Any recent Python 3 release works. The client uses type hints and f-strings that require Python 3.6+.
+  </Card>
+  <Card title="protobuf" icon="box">
+    Install the Google Protobuf runtime with `pip install protobuf`. The generated `messages_pb2` module is included in the client directory.
+  </Card>
+</CardGroup>
+
+## Setup
+
+<Steps>
+  <Step title="Install the protobuf package">
+    ```bash
+    pip install protobuf
+    ```
+  </Step>
+  <Step title="Navigate to the client directory">
+    ```bash
+    cd drmq-python-client
+    ```
+  </Step>
+  <Step title="Import the client in your code">
+    ```python
+    from drmq_client import DRMQProducer, DRMQConsumer
+    ```
+    Both classes are exported from `drmq_client.py`. The generated protobuf module `messages_pb2.py` must be in the same directory or on your `PYTHONPATH`.
+  </Step>
+</Steps>
+
+---
+
+## DRMQProducer
+
+`DRMQProducer` connects to a DRMQ broker and sends byte payloads to named topics. When the broker returns a `NOT_LEADER` error, the client automatically redirects to the reported leader address and retries. If a connection drops mid-send, it rotates to the next bootstrap server and retries up to five times before raising `DRMQConnectionError`.
+
+### Constructor
+
+```python
+DRMQProducer(bootstrap_servers: str)
+```
+
+Pass a comma-separated string of `host:port` entries. The client picks a random starting entry and walks the list on failure, providing both load balancing and resilience.
+
+```python
+# Single broker — development
+producer = DRMQProducer("localhost:9092")
+
+# Cluster — production
+producer = DRMQProducer("broker1:9092,broker2:9093,broker3:9094")
+```
+
+### Methods
+
+<ParamField path="connect()" type="None">
+  Opens a TCP socket to one of the bootstrap brokers. Call this once before sending any messages. Raises `DRMQConnectionError` if no broker is reachable after all retry attempts.
+</ParamField>
+
+<ParamField path="send(topic: str, payload: bytes, key: Optional[str] = None)" type="ProduceResponse">
+  Send `payload` to `topic`. Optionally attach a routing `key`. Returns a `ProduceResponse` protobuf object — check `.success` before reading `.offset`. The client retries up to `max_retries` (5) times, rotating bootstrap servers and following leader redirects automatically.
+</ParamField>
+
+<ParamField path="close()" type="None">
+  Closes the underlying TCP socket. Call this when you are done producing, or use the client as a context manager.
+</ParamField>
+
+### ProduceResponse fields
+
+<ResponseField name=".success" type="bool">
+  `True` when the broker accepted and persisted the message.
+</ResponseField>
+
+<ResponseField name=".offset" type="int">
+  The broker-assigned log offset for the persisted message. Meaningful only when `.success` is `True`.
+</ResponseField>
+
+<ResponseField name=".error_message" type="str">
+  A human-readable error description when `.success` is `False`.
+</ResponseField>
+
+### Producer example
+
+```python
+from drmq_client import DRMQProducer
+
+producer = DRMQProducer("localhost:9092,localhost:9093")
+try:
+    producer.connect()
+
+    res = producer.send("python-topic", b"Hello from Python!")
+
+    if res.success:
+        print(f"Message persisted at offset {res.offset}")
+    else:
+        print(f"Send failed: {res.error_message}")
+
+    # Send with an optional routing key
+    res2 = producer.send("orders", b'{"id": 42}', key="order-42")
+    print(f"Keyed send at offset {res2.offset}")
+finally:
+    producer.close()
+```
+
+<Tip>
+  You do not need to pre-create a topic. DRMQ creates topics implicitly on the first produce call.
+</Tip>
+
+---
+
+## DRMQConsumer
+
+`DRMQConsumer` reads messages from one or more subscribed topics. Like the Java SDK, it supports **group mode** for load-balanced consumption and **single mode** for precise manual offset control. Set `auto_commit = True` to let the client commit offsets after each `poll()` automatically, or call `commit()` manually for exactly-once processing guarantees.
+
+### Constructor
+
+```python
+DRMQConsumer(bootstrap_servers: str, group_id: Optional[str] = None, consumer_id: str = "py-consumer-1")
+```
+
+Providing a non-`None` `group_id` enables group mode. Omit it (or pass `None`) to operate in single-consumer mode.
+
+```python
+# Group mode — scale out by running multiple instances with the same group_id
+consumer = DRMQConsumer("localhost:9092,localhost:9093", group_id="python-workers")
+
+# Single mode — manual offset control
+consumer = DRMQConsumer("localhost:9092")
+```
+
+### Methods
+
+<ParamField path="connect()" type="None">
+  Opens a TCP socket to one of the bootstrap brokers.
+</ParamField>
+
+<ParamField path="auto_commit" type="bool (property)">
+  Set to `True` to automatically commit the offset of the last message in each `poll()` batch. Defaults to `False`. Assign directly: `consumer.auto_commit = True`.
+</ParamField>
+
+<ParamField path="subscribe(topic: str, from_offset: Optional[int] = None)" type="None">
+  Register interest in `topic`. In group mode, the broker manages the offset (pass `from_offset` to override). In single mode, `from_offset` sets the starting position; if omitted, the client fetches the last committed offset from the broker.
+</ParamField>
+
+<ParamField path="poll(max_messages: int = 100, timeout_ms: int = 1000)" type="List[StoredMessage]">
+  Fetch up to `max_messages` from each subscribed topic. The broker waits up to `timeout_ms` milliseconds before returning an empty list. Returns a flat list of `StoredMessage` protobuf objects across all subscribed topics.
+</ParamField>
+
+<ParamField path="commit(topic: str, offset: int)" type="None">
+  Commit `offset` to the broker for `topic`. The broker will deliver messages starting at `offset` to this group on the next poll.
+</ParamField>
+
+<ParamField path="nack(topic: str, offset: int)" type="bool">
+  Explicitly reject a message at `offset`. Returns `True` if the broker routed the message to the dead-letter queue (`dlq.<group>.<topic>`), or `False` if it was requeued. Raises `RuntimeError` in single-consumer mode.
+</ParamField>
+
+<ParamField path="close()" type="None">
+  Closes the underlying TCP socket.
+</ParamField>
+
+### StoredMessage fields
+
+<ResponseField name=".offset" type="int">
+  The broker-assigned log position of the message.
+</ResponseField>
+
+<ResponseField name=".payload" type="bytes">
+  Raw message bytes. Decode with `msg.payload.decode("utf-8")` for text payloads.
+</ResponseField>
+
+<ResponseField name=".key" type="str">
+  Optional routing key set by the producer.
+</ResponseField>
+
+<ResponseField name=".timestamp" type="int">
+  Producer-set timestamp in milliseconds since epoch.
+</ResponseField>
+
+<ResponseField name=".topic" type="str">
+  The topic the message was read from.
+</ResponseField>
+
+---
+
+### Consumer examples
+
+<Tabs>
+  <Tab title="Group mode (auto-commit)">
+    Run several copies of this script with the same `group_id`. The broker splits the message stream across all live consumers automatically — no partitions required.
+
+    ```python
+    from drmq_client import DRMQConsumer
+
+    consumer = DRMQConsumer("localhost:9092,localhost:9093", group_id="python-workers")
+    consumer.auto_commit = True
+    try:
+        consumer.connect()
+        consumer.subscribe("python-topic")
+
+        messages = consumer.poll(max_messages=10, timeout_ms=5000)
+        for msg in messages:
+            print(f"Received (offset {msg.offset}): {msg.payload.decode('utf-8')}")
+    finally:
+        consumer.close()
+    ```
+
+    <Note>
+      Design your consumer to be idempotent. With at-least-once delivery semantics, a crash before an auto-commit completes causes the broker to redeliver the batch to the next available consumer in the group.
+    </Note>
+  </Tab>
+  <Tab title="Manual commit">
+    Commit only after successful processing to avoid losing messages when your handler raises an exception.
+
+    ```python
+    from drmq_client import DRMQConsumer
+
+    consumer = DRMQConsumer("localhost:9092,localhost:9093", group_id="order-processors")
+    try:
+        consumer.connect()
+        consumer.subscribe("orders")
+
+        while True:
+            messages = consumer.poll(max_messages=50, timeout_ms=2000)
+            for msg in messages:
+                try:
+                    process_order(msg.payload)         # your business logic
+                    consumer.commit("orders", msg.offset + 1)
+                except Exception as e:
+                    print(f"Processing failed for offset {msg.offset}: {e}")
+                    routed = consumer.nack("orders", msg.offset)
+                    if routed:
+                        print(f"Poison pill sent to DLQ: offset {msg.offset}")
+    finally:
+        consumer.close()
+    ```
+  </Tab>
+  <Tab title="Single mode (replay)">
+    Disable group coordination and replay from offset `0` to read the entire topic log.
+
+    ```python
+    from drmq_client import DRMQConsumer
+
+    consumer = DRMQConsumer("localhost:9092")  # no group_id → single mode
+    try:
+        consumer.connect()
+        consumer.subscribe("audit-log", from_offset=0)  # replay from start
+
+        while True:
+            messages = consumer.poll(max_messages=100, timeout_ms=1000)
+            for msg in messages:
+                print(f"Replaying offset {msg.offset}: {msg.payload.decode('utf-8')}")
+    finally:
+        consumer.close()
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  `nack()` raises `RuntimeError` when called in single-consumer mode. Dead-letter routing is a broker-coordinated group feature and is only available when a `group_id` is set.
+</Warning>

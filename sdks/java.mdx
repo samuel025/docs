@@ -1,0 +1,341 @@
+---
+title: "DRMQ Java Client SDK Reference"
+sidebarTitle: "Java SDK"
+description: "Send and consume messages in Java using DRMQProducer and DRMQConsumer, with auto-failover, consumer groups, and dead-letter queue support."
+---
+
+The DRMQ Java client is the primary SDK for producing and consuming messages against a DRMQ broker cluster. It wraps the custom TCP/Protobuf protocol in a clean, synchronous API that handles automatic leader redirection, bootstrap-server failover, and offset management so that your application code stays focused on business logic. Both `DRMQProducer` and `DRMQConsumer` implement `AutoCloseable`, making them a natural fit with Java's try-with-resources statement.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Java 17+" icon="java">
+    The client uses Java records and other modern language features. Java 17 or higher is required.
+  </Card>
+  <Card title="Maven 3.8+" icon="box">
+    The repository is a multi-module Maven build. Use the `drmq-client` module as a project dependency.
+  </Card>
+</CardGroup>
+
+### Add the client to your Maven project
+
+Because the client lives in the same multi-module build, declare it as a module dependency in your `pom.xml`:
+
+```xml pom.xml
+<dependency>
+    <groupId>com.drmq</groupId>
+    <artifactId>drmq-client</artifactId>
+    <version>1.0-SNAPSHOT</version>
+</dependency>
+```
+
+Then build the full project from the repository root to install all modules into your local Maven cache:
+
+```bash
+mvn clean install
+```
+
+---
+
+## DRMQProducer
+
+`DRMQProducer` sends messages to a DRMQ topic over a persistent TCP connection. It is thread-safe — multiple threads can call `send()` concurrently. When it receives a `NOT_LEADER` redirect from a follower node, it transparently reconnects to the reported leader and retries the send.
+
+### Constructor
+
+```java
+DRMQProducer(String bootstrapServers)
+```
+
+Pass a comma-separated list of `host:port` addresses. The client picks a random starting server and rotates through the list on failure.
+
+```java
+// Single broker (development)
+DRMQProducer producer = new DRMQProducer("localhost:9092");
+
+// Cluster (production) — provide all nodes for resilience
+DRMQProducer producer = new DRMQProducer("broker1:9092,broker2:9093,broker3:9094");
+```
+
+### Methods
+
+<ParamField path="connect()" type="void">
+  Opens the TCP connection to one of the bootstrap brokers. Call this once before any `send()`. Throws `IOException` if no broker is reachable after all retry attempts.
+</ParamField>
+
+<ParamField path="send(String topic, String message)" type="SendResult">
+  Encodes `message` as UTF-8 bytes and sends it to `topic`. Returns a `SendResult` describing success or failure.
+</ParamField>
+
+<ParamField path="send(String topic, byte[] payload)" type="SendResult">
+  Sends a raw byte payload to `topic`.
+</ParamField>
+
+<ParamField path="send(String topic, byte[] payload, String key)" type="SendResult">
+  Sends a raw byte payload with an optional routing key. Pass `null` for `key` to omit it.
+</ParamField>
+
+<ParamField path="isConnected()" type="boolean">
+  Returns `true` when the underlying socket is open and the client has a live connection.
+</ParamField>
+
+<ParamField path="close()" type="void">
+  Closes the TCP connection and releases resources. Implements `AutoCloseable`.
+</ParamField>
+
+### SendResult
+
+`SendResult` is returned by every `send()` call. Check `isSuccess()` before reading the offset.
+
+<ResponseField name="isSuccess()" type="boolean">
+  `true` if the broker accepted and persisted the message.
+</ResponseField>
+
+<ResponseField name="getOffset()" type="long">
+  The broker-assigned log offset of the persisted message. Only meaningful when `isSuccess()` returns `true`; returns `-1` on failure.
+</ResponseField>
+
+<ResponseField name="getErrorMessage()" type="String">
+  A human-readable error description when `isSuccess()` returns `false`; `null` on success.
+</ResponseField>
+
+### Producer example
+
+```java
+import com.drmq.client.DRMQProducer;
+import java.io.IOException;
+
+try (DRMQProducer producer = new DRMQProducer("localhost:9092,localhost:9093")) {
+    producer.connect();
+
+    // Send a plain string
+    DRMQProducer.SendResult result = producer.send("my-topic", "Hello, DRMQ!");
+
+    if (result.isSuccess()) {
+        System.out.println("Message persisted at offset " + result.getOffset());
+    } else {
+        System.err.println("Send failed: " + result.getErrorMessage());
+    }
+
+    // Send binary payload with a key
+    byte[] data = loadOrderBytes();
+    DRMQProducer.SendResult keyedResult = producer.send("orders", data, "order-id-42");
+    System.out.println("Keyed send success: " + keyedResult.isSuccess());
+
+} catch (IOException e) {
+    e.printStackTrace();
+}
+```
+
+<Tip>
+  Use try-with-resources to guarantee the connection is closed even if an exception is thrown during sending.
+</Tip>
+
+---
+
+## DRMQConsumer
+
+`DRMQConsumer` reads messages from one or more topics. It supports two consumption modes that you choose at construction time and can override at any point before calling `subscribe()`.
+
+<CardGroup cols={2}>
+  <Card title="Group Mode" icon="users">
+    Multiple consumer instances share the same group name. The broker distributes messages across all live members — no partitions needed. Ideal for scaled-out processing pipelines.
+  </Card>
+  <Card title="Single Consumer Mode" icon="user">
+    The client drives its own offsets. Use this for message replay, auditing, or cases where you need to read from an arbitrary position in the log.
+  </Card>
+</CardGroup>
+
+### Constructor
+
+```java
+DRMQConsumer(String bootstrapServers, String consumerGroup)
+```
+
+Passing a non-blank `consumerGroup` automatically enables group mode. Pass `null` or an empty string to start in single-consumer mode.
+
+### Methods
+
+<ParamField path="connect()" type="void">
+  Opens a TCP connection to one of the bootstrap brokers. Call before `subscribe()` or `poll()`.
+</ParamField>
+
+<ParamField path="setAutoCommit(boolean autoCommit)" type="void">
+  When `true`, the client commits the offset of the last message in each `poll()` batch automatically. Default is `false`.
+</ParamField>
+
+<ParamField path="setGroupMode(boolean groupMode)" type="void">
+  Override the mode determined at construction. Set to `false` to switch to single-consumer mode and gain full manual offset control.
+</ParamField>
+
+<ParamField path="subscribe(String topic)" type="void">
+  Register interest in `topic`. In group mode, the broker assigns offsets; in single mode, the client starts from offset `0` (or the last committed offset for the group).
+</ParamField>
+
+<ParamField path="subscribe(String topic, long fromOffset)" type="void">
+  Register interest in `topic` starting from an explicit `fromOffset`. Use this for replay scenarios — pass `0` to read the entire log from the beginning.
+</ParamField>
+
+<ParamField path="poll()" type="List&lt;ConsumedMessage&gt;">
+  Fetch up to 100 messages with a 1-second broker-side wait. Convenience wrapper around `poll(int, long)`.
+</ParamField>
+
+<ParamField path="poll(int maxMessages, long timeoutMs)" type="List&lt;ConsumedMessage&gt;">
+  Fetch up to `maxMessages` from each subscribed topic, waiting up to `timeoutMs` milliseconds on the broker side before returning an empty list.
+</ParamField>
+
+<ParamField path="commit(String topic, long offset)" type="void">
+  Manually commit `offset` to the broker for `topic`. The broker will deliver messages starting at this offset to the group on the next poll.
+</ParamField>
+
+<ParamField path="nack(String topic, long offset)" type="boolean">
+  Explicitly reject a message at `offset`. Returns `true` if the broker routed the message to the dead-letter queue (`dlq.<group>.<topic>`), or `false` if it was requeued for redelivery. Only valid in group mode; throws `IllegalStateException` otherwise.
+</ParamField>
+
+<ParamField path="getCurrentOffset(String topic)" type="long">
+  Returns the client's local tracking offset for `topic` — the next offset that will be requested on the following `poll()`.
+</ParamField>
+
+<ParamField path="close()" type="void">
+  Closes the TCP connection and releases resources. Implements `AutoCloseable`.
+</ParamField>
+
+### ConsumedMessage
+
+`ConsumedMessage` is a Java record returned in every `poll()` batch.
+
+<ResponseField name="offset()" type="long">
+  The broker-assigned log position of this message.
+</ResponseField>
+
+<ResponseField name="topic()" type="String">
+  The topic the message was read from.
+</ResponseField>
+
+<ResponseField name="payload()" type="byte[]">
+  Raw message bytes.
+</ResponseField>
+
+<ResponseField name="key()" type="String">
+  Optional routing key set by the producer; `null` if none was provided.
+</ResponseField>
+
+<ResponseField name="timestamp()" type="long">
+  Producer-set timestamp in milliseconds since epoch.
+</ResponseField>
+
+<ResponseField name="storedAt()" type="long">
+  Broker-set timestamp in milliseconds since epoch, recorded when the message was persisted.
+</ResponseField>
+
+<ResponseField name="payloadAsString()" type="String">
+  Decodes `payload()` as a UTF-8 string — a convenience shortcut for `new String(msg.payload())`.
+</ResponseField>
+
+---
+
+### Example 1 — Group mode with auto-commit
+
+Run multiple instances of this snippet with the same group name. The broker automatically distributes messages across all live consumers with at-least-once delivery semantics.
+
+```java
+import com.drmq.client.DRMQConsumer;
+import java.util.List;
+
+// Consumer 1 — identical code on a second machine/thread forms the group
+DRMQConsumer consumer = new DRMQConsumer("localhost:9092,localhost:9093", "order-processors");
+consumer.setAutoCommit(true);
+consumer.connect();
+consumer.subscribe("orders"); // broker assigns offsets automatically
+
+while (true) {
+    List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);
+    for (DRMQConsumer.ConsumedMessage msg : messages) {
+        System.out.printf("Received (offset %d): %s%n", msg.offset(), msg.payloadAsString());
+    }
+}
+```
+
+<Note>
+  Consumers should be idempotent when using auto-commit. If a consumer crashes after processing but before the auto-commit completes, the broker redelivers the uncommitted messages to the next available consumer in the group.
+</Note>
+
+---
+
+### Example 2 — Single-consumer mode with manual offsets and replay
+
+Disable group mode to take direct control of offsets. You can start from any position in the log, including offset `0` for a full replay.
+
+```java
+import com.drmq.client.DRMQConsumer;
+import java.io.IOException;
+import java.util.List;
+
+try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group")) {
+    consumer.setGroupMode(false); // disable broker coordination
+    consumer.connect();
+
+    // replay all messages from the very beginning of the log
+    consumer.subscribe("my-topic", 0);
+
+    while (true) {
+        List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);
+        for (DRMQConsumer.ConsumedMessage msg : messages) {
+            System.out.printf("Replaying (offset %d): %s%n", msg.offset(), msg.payloadAsString());
+        }
+
+        // Manually commit so the broker remembers where you stopped
+        if (!messages.isEmpty()) {
+            long lastOffset = messages.get(messages.size() - 1).offset();
+            consumer.commit("my-topic", lastOffset + 1);
+        }
+    }
+} catch (IOException e) {
+    e.printStackTrace();
+}
+```
+
+<Tip>
+  In single-consumer mode, `getCurrentOffset("my-topic")` always reflects the next offset the client will request — useful for checkpointing or logging progress.
+</Tip>
+
+---
+
+### Example 3 — NACK and dead-letter queue handling
+
+Call `nack()` when your processing logic cannot handle a message. After a configurable number of delivery failures (default 5), the broker routes the message to `dlq.<group>.<topic>` and advances the group offset so the queue is not blocked.
+
+```java
+import com.drmq.client.DRMQConsumer;
+import java.io.IOException;
+import java.util.List;
+
+try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "order-processors")) {
+    consumer.connect();
+    consumer.subscribe("orders");
+
+    while (true) {
+        List<DRMQConsumer.ConsumedMessage> messages = consumer.poll();
+        for (DRMQConsumer.ConsumedMessage msg : messages) {
+            try {
+                processOrder(msg); // your business logic
+                consumer.commit("orders", msg.offset() + 1);
+            } catch (Exception e) {
+                // Explicitly reject the message on failure
+                boolean routedToDlq = consumer.nack("orders", msg.offset());
+                if (routedToDlq) {
+                    System.err.println("Poison pill moved to DLQ at offset: " + msg.offset());
+                } else {
+                    System.err.println("Message requeued for redelivery at offset: " + msg.offset());
+                }
+            }
+        }
+    }
+} catch (IOException e) {
+    e.printStackTrace();
+}
+```
+
+<Warning>
+  `nack()` throws `IllegalStateException` if called in single-consumer mode. Dead-letter routing is a group-coordination feature and requires group mode to be active.
+</Warning>

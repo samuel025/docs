@@ -1,0 +1,130 @@
+---
+title: "Message Delivery Guarantees in DRMQ"
+sidebarTitle: "Delivery Guarantees"
+description: "Explore DRMQ's at-least-once delivery model, commit semantics, NACK and DLQ handling, WAL durability, and strict per-topic message ordering."
+---
+
+DRMQ is designed so that every message you produce is delivered to its consumers — even in the face of consumer crashes, broker restarts, or network disruptions. Understanding exactly what the broker promises (and what it does not) lets you build systems that are both resilient and correct. This page covers the delivery model in detail: when messages are redelivered, how to prevent unwanted duplicates, and what durable persistence means in practice.
+
+## Delivery Semantics: At-Least-Once in Group Mode
+
+DRMQ provides **at-least-once delivery** for consumers operating in group mode. The broker guarantees that every acknowledged message will reach a consumer in the group at least one time, but it does not eliminate the possibility of a message arriving more than once.
+
+A duplicate delivery happens when:
+
+1. The broker dispatches a message and the consumer begins processing it.
+2. The consumer crashes (or its network connection drops) before calling `commit()`.
+3. The broker's lease for that message expires and it requeues the message.
+4. Another (or the same, after restart) consumer polls and receives it again.
+
+The solution is to write **idempotent** consumers: processing the same message twice produces the same observable outcome as processing it once. Use the message's `offset()` or `key()` as a natural idempotency token in your storage layer.
+
+## How `commit()` Prevents Redelivery
+
+Calling `consumer.commit(topic, nextOffset)` tells the broker that your group has successfully consumed all messages up to — but not including — `nextOffset`. The broker persists this position atomically with bounds locking to prevent data loss during concurrent background writes. Once committed, the broker will never redeliver any offset before `nextOffset` to this group.
+
+```java
+for (DRMQConsumer.ConsumedMessage msg : messages) {
+    // 1. Do your work
+    persistToDatabase(msg);
+
+    // 2. Only commit after the work succeeds
+    consumer.commit("payments", msg.offset() + 1);
+}
+```
+
+The argument is the offset of the **next** message you want to receive — `msg.offset() + 1` is the standard idiom.
+
+## Auto-Commit vs. Manual Commit Trade-offs
+
+<CardGroup cols={2}>
+  <Card title="Auto-Commit" icon="bolt">
+    Enable with `consumer.setAutoCommit(true)`. The client automatically commits after each successful `poll()` call, reducing boilerplate. The risk: if your application processes the batch but crashes before the next `poll()`, the commit already fired and those messages will **not** be redelivered.
+  </Card>
+  <Card title="Manual Commit" icon="hand">
+    Leave `autoCommit` at its default `false`. Call `consumer.commit(topic, offset + 1)` inside your processing loop, after each message is safely persisted. Messages remain eligible for redelivery until you explicitly commit them. Preferred when processing has side effects.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Prefer manual commit whenever your processing involves external writes (databases, APIs, file systems). Reserve auto-commit for read-only analytics or logging workloads where an occasional duplicate or gap is acceptable.
+</Tip>
+
+## What Happens When a Consumer Crashes Before Committing
+
+DRMQ uses a **lease-based dispatch protocol** to handle in-flight messages safely:
+
+<Steps>
+  <Step title="Broker leases the message">
+    When you call `poll()`, the broker assigns a lease for the next uncommitted message in the group to your consumer instance (identified by its auto-generated `consumerId`).
+  </Step>
+  <Step title="Consumer processes the message">
+    Your application receives the message and begins its work. The lease remains open for your consumer ID while this happens.
+  </Step>
+  <Step title="Consumer crashes without committing">
+    The TCP connection drops. The broker detects the disconnection and marks the lease as expired.
+  </Step>
+  <Step title="Broker redelivers to the next available consumer">
+    Any live consumer in the group that calls `poll()` will now receive the previously leased message. Processing resumes without manual intervention.
+  </Step>
+</Steps>
+
+<Accordion title="What if my consumer crashes?">
+  When your consumer process exits unexpectedly — or its network connection drops for any reason — the broker detects the disconnection and immediately requeues all messages that were leased to that consumer but not yet committed. The next `poll()` call from any surviving consumer in the group (or your consumer after it restarts and reconnects) will return those messages again. You do not need to do anything special to trigger this recovery; it is automatic.
+
+  To minimize the window of redelivery, keep your processing batches small and commit frequently.
+</Accordion>
+
+<Accordion title="Can I receive the same message twice?">
+  Yes — this is intentional and expected under at-least-once semantics. You will see a duplicate if your consumer crashes between processing a message and calling `commit()`, or if a commit request fails in transit. Design your consumer logic to be idempotent: guard against duplicates by recording the last successfully processed offset in your own storage, or by using upsert semantics so a re-processed message produces the same result as the first processing.
+</Accordion>
+
+## NACK and Dead-Letter Queues
+
+If a message cannot be processed — for example, it fails schema validation or triggers an unrecoverable exception — call `consumer.nack(topic, offset)` to explicitly reject it. The broker increments the delivery count for that message. Once the delivery count reaches the **`maxDeliveries` threshold** (default: **5**, configurable via `--max-deliveries` at broker startup), the broker:
+
+1. Routes the message to the DLQ topic: `dlq.<groupName>.<originalTopic>`.
+2. Advances the group's offset past the problematic message, unblocking the rest of the queue.
+
+```java
+for (DRMQConsumer.ConsumedMessage msg : messages) {
+    try {
+        processOrder(msg);
+        consumer.commit("orders", msg.offset() + 1);
+    } catch (UnprocessableMessageException e) {
+        // Explicitly signal failure to the broker
+        boolean routedToDlq = consumer.nack("orders", msg.offset());
+        if (routedToDlq) {
+            alertOncall("Poison pill at offset " + msg.offset() + " sent to DLQ");
+        }
+    }
+}
+```
+
+`nack()` returns `true` when the message has been routed to the DLQ, and `false` when it has been requeued for another delivery attempt. Without explicit `nack()` calls, uncommitted messages are requeued indefinitely on consumer crash — calling `nack()` is how you signal intentional rejection.
+
+<Warning>
+  `nack()` is only available in group mode. Calling it on a single-mode consumer throws `IllegalStateException`. In single mode, you control exactly which offsets you fetch, so you can simply skip a bad offset by committing past it.
+</Warning>
+
+## Persistent WAL: Messages Survive Broker Restarts
+
+Every `send()` call is acknowledged only after the broker writes the message to its **Write-Ahead Log (WAL)** on disk. No message is ever lost due to a broker restart after an acknowledged produce:
+
+- The WAL uses segment-based storage (default: 100 MB segments, 7-day retention) that survives process crashes.
+- In cluster mode, the Raft leader replicates WAL entries to a quorum of followers before acknowledging the producer, so even a leader failure does not lose committed data.
+- Log compaction (snapshots) runs automatically when the Raft log exceeds the compact threshold (default: 1,000 entries), keeping disk usage bounded without losing any messages within the retention window.
+
+<Note>
+  The WAL persistence guarantee applies to **acknowledged** messages only. If a producer's `send()` call returns `isSuccess() == false`, the message was not durably written and you must retry.
+</Note>
+
+## Ordering Guarantee
+
+Messages within a single topic are **strictly ordered by offset**. The broker assigns offsets sequentially and atomically: no two messages share an offset, and the broker always delivers them in ascending offset order. This guarantee holds in both single-node and cluster modes — the Raft log enforces global ordering across all broker nodes.
+
+This means:
+
+- If you produce `A` then `B` to the same topic, consumers always see `A` before `B`.
+- There is no out-of-order delivery within a topic.
+- Ordering across **different** topics is not guaranteed — use a single topic if cross-message ordering matters.

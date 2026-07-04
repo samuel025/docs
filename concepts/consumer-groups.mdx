@@ -1,0 +1,179 @@
+---
+title: "Consumer Groups and Load Balancing"
+sidebarTitle: "Consumer Groups"
+description: "Understand how DRMQ consumer groups distribute messages across multiple consumers and how fan-out lets independent groups each receive every message."
+---
+
+DRMQ lets you scale message processing horizontally without partitions. Create any number of consumers that share the same **group name**, and the broker automatically divides the workload among them — no partition assignments, no rebalance protocols, no configuration changes required. At the same time, completely separate groups each receive their own independent copy of every message, enabling fan-out to multiple downstream systems from a single topic.
+
+## What Is a Consumer Group?
+
+A consumer group is a set of consumer instances that all identify themselves to the broker with the same group name string. The broker tracks a **single committed offset per group per topic** and uses a lease-based dispatch protocol to ensure that each message is delivered to exactly one consumer within the group. When one consumer in the group commits an offset, the entire group advances.
+
+```text
+Topic: orders
+  offset 0: {"id": 1}
+  offset 1: {"id": 2}
+  offset 2: {"id": 3}
+  offset 3: {"id": 4}
+
+Group "order-processors" (c1, c2)
+  ├─ c1 receives offsets 0, 2, ...
+  └─ c2 receives offsets 1, 3, ...
+
+Group "analytics" (independent)
+  └─ receives ALL offsets: 0, 1, 2, 3, ...
+```
+
+## How DRMQ Distributes Messages Without Partitions
+
+Traditional brokers rely on partitions to parallelize consumption — each partition can only be read by one consumer at a time, and adding consumers beyond the partition count wastes resources. DRMQ takes a different approach: the broker maintains a **dispatch queue per group** and leases the next available message to whichever consumer polls first. This means:
+
+- You can add or remove consumers at any time without reconfiguration.
+- Every consumer in the group stays busy as long as there are unprocessed messages.
+- There is no concept of a "partition owner" or rebalance event.
+
+<Note>
+  Because lease-based dispatch ties each in-flight message to a specific consumer instance, uncommitted messages are automatically redelivered if that consumer disconnects before committing. Always design your consumers to be **idempotent** — processing the same message twice should produce the same outcome.
+</Note>
+
+## Fan-Out: Independent Groups Each Receive All Messages
+
+Two groups named differently are completely isolated from each other. Both groups maintain their own committed offset, and advancing one has zero effect on the other. This is how you build pipelines where the same event needs to flow to multiple subsystems — for example, an `orders` topic feeding both an `order-processors` group and an `analytics` group simultaneously.
+
+```text
+Topic: orders
+        │
+        ├──► Group "order-processors"  (fulfillment service)
+        │         offset pointer: 42
+        │
+        └──► Group "analytics"         (reporting service)
+                  offset pointer: 38
+```
+
+Each group sees every message independently. Publishing one message to `orders` causes it to be delivered once to `order-processors` and once to `analytics`, regardless of how many consumers each group contains.
+
+## Group Mode vs. Single Consumer Mode
+
+<Tabs>
+  <Tab title="Group Mode (Default)">
+    Group mode is active whenever you construct a `DRMQConsumer` with a non-empty group name. The broker manages offset dispatch, load balancing, and lease-based redelivery on your behalf.
+
+    ```java
+    // Consumer 1 — running on machine A
+    DRMQConsumer c1 = new DRMQConsumer("localhost:9092,localhost:9093", "order-processors");
+    c1.setAutoCommit(true);
+    c1.connect();
+    c1.subscribe("orders"); // broker assigns which offsets this instance receives
+
+    // Consumer 2 — running on machine B (same group, different process)
+    DRMQConsumer c2 = new DRMQConsumer("localhost:9092,localhost:9093", "order-processors");
+    c2.setAutoCommit(true);
+    c2.connect();
+    c2.subscribe("orders"); // broker ensures c1 and c2 receive different messages
+
+    while (true) {
+        List<DRMQConsumer.ConsumedMessage> messages = c1.poll(100, 1000);
+        for (DRMQConsumer.ConsumedMessage msg : messages) {
+            System.out.printf("c1 received offset %d: %s%n",
+                msg.offset(), msg.payloadAsString());
+        }
+    }
+    ```
+
+    You can start as many instances sharing `"order-processors"` as you need. The broker distributes the load automatically without any restart or reconfiguration.
+  </Tab>
+  <Tab title="Single Consumer Mode">
+    Call `setGroupMode(false)` to disable broker-managed dispatch. In this mode the client tells the broker exactly which offset to fetch, giving you complete manual control. Use this for replay, auditing, or situations where you need to read from an arbitrary position.
+
+    ```java
+    try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group")) {
+        consumer.setGroupMode(false); // disable broker coordination
+        consumer.connect();
+
+        // Replay the entire topic from the beginning
+        consumer.subscribe("orders", 0);
+
+        while (true) {
+            List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);
+            for (DRMQConsumer.ConsumedMessage msg : messages) {
+                System.out.printf("Replaying offset %d: %s%n",
+                    msg.offset(), msg.payloadAsString());
+            }
+
+            // Manually commit so you can resume from here if interrupted
+            if (!messages.isEmpty()) {
+                long lastOffset = messages.get(messages.size() - 1).offset();
+                consumer.commit("orders", lastOffset + 1);
+            }
+        }
+    }
+    ```
+
+    <Warning>
+      `nack()` is only supported in group mode. Calling it on a single-mode consumer throws `IllegalStateException`.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## At-Least-Once Delivery and the Lease Protocol
+
+In group mode, every dispatched message is held under a **lease** tied to the consumer that received it. The lease remains open until that consumer calls `commit()` (or `autoCommit` fires after `poll()`). If the consumer's connection drops before the commit reaches the broker, the lease expires and the broker redelivers the message to the next available consumer in the group.
+
+This gives you **at-least-once delivery semantics**: every message is guaranteed to be processed at least once, but a consumer crash before commit means the same message may be processed a second time.
+
+<CardGroup cols={2}>
+  <Card title="Commit advances the group" icon="check">
+    Calling `consumer.commit("orders", offset + 1)` tells the broker the group has successfully processed up to `offset`. The broker will not redeliver any message before that point to this group.
+  </Card>
+  <Card title="Crash triggers redelivery" icon="rotate-right">
+    If a consumer disconnects with an uncommitted lease, the broker automatically requeues that message for the next `poll()` call from any live consumer in the group.
+  </Card>
+</CardGroup>
+
+## Designing Idempotent Consumers
+
+Because the same message can arrive more than once under at-least-once semantics, your processing logic must be safe to run multiple times with the same input. Common patterns include:
+
+<Accordion title="Use a unique message key as an idempotency token">
+  Producers can attach an optional `key` to each message. Read it via `msg.key()`. Store processed keys in a fast lookup (Redis, a database unique index, or an in-memory set) and skip any message whose key you have already handled.
+</Accordion>
+
+<Accordion title="Use database upsert semantics">
+  Rather than inserting a new row, use an `INSERT ... ON CONFLICT DO NOTHING` or equivalent upsert. If the row already exists from a previous delivery, the duplicate write becomes a no-op.
+</Accordion>
+
+<Accordion title="Use the offset as a natural idempotency key">
+  Every message has a unique, stable `offset()` value within its topic. Record the highest offset you have successfully persisted per group; if an incoming message's offset is ≤ the recorded value, skip it.
+</Accordion>
+
+## Dead-Letter Queues for Unprocessable Messages
+
+If a consumer repeatedly fails to process a message, call `consumer.nack(topic, offset)` to explicitly reject it. The broker tracks delivery attempts; once a message exceeds the configured threshold (default: **5 attempts**, set by `maxDeliveries` in `BrokerConfig`), it is automatically routed to the Dead-Letter Queue topic `dlq.<groupName>.<topic>` and the group's offset advances past it, preventing queue blockage.
+
+```java
+try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "order-processors")) {
+    consumer.connect();
+    consumer.subscribe("orders");
+
+    while (true) {
+        List<DRMQConsumer.ConsumedMessage> messages = consumer.poll();
+        for (DRMQConsumer.ConsumedMessage msg : messages) {
+            try {
+                processOrder(msg);
+                consumer.commit("orders", msg.offset() + 1);
+            } catch (Exception e) {
+                // Reject the message; broker will redeliver or route to DLQ
+                boolean routedToDlq = consumer.nack("orders", msg.offset());
+                if (routedToDlq) {
+                    System.err.println("Poison pill sent to DLQ: offset " + msg.offset());
+                }
+            }
+        }
+    }
+}
+```
+
+<Note>
+  The DLQ topic name follows the pattern `dlq.<groupName>.<originalTopic>` — for example, `dlq.order-processors.orders`. Subscribe a separate consumer to that topic to inspect, retry, or alert on failed messages.
+</Note>

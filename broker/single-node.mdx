@@ -1,0 +1,105 @@
+---
+title: "Run DRMQ in Single-Node Mode"
+sidebarTitle: "Single Node"
+description: "Start a standalone DRMQ broker for local development, integration testing, or simple deployments that do not require fault tolerance."
+---
+
+Single-node mode runs the broker as a standalone process with no Raft cluster peers. The broker skips quorum negotiation entirely and commits every incoming message immediately to its local write-ahead log. This makes it the fastest way to get DRMQ running and is the right choice for development environments, CI pipelines, and any deployment where availability trade-offs are acceptable.
+
+## When to use single-node mode
+
+<CardGroup cols={3}>
+  <Card title="Local Development" icon="laptop-code">
+    Spin up a broker in seconds on your laptop without configuring multiple processes or peer addresses.
+  </Card>
+  <Card title="Integration Testing" icon="flask">
+    Run a throwaway broker in CI that starts and stops cleanly for each test suite.
+  </Card>
+  <Card title="Simple Deployments" icon="server">
+    Serve low-stakes workloads where a single durable node is sufficient and operational simplicity matters.
+  </Card>
+</CardGroup>
+
+<Warning>
+  Single-node mode is **not fault-tolerant**. If the broker process crashes or the host fails, any messages not yet flushed to disk may be lost and the broker will be unavailable until you restart it. For production workloads requiring high availability, use [cluster mode](/broker/cluster-setup) instead.
+</Warning>
+
+## Start the broker
+
+Run the following command from the root of the DRMQ repository. Maven's `exec:java` goal compiles and launches the broker in one step — no separate build required.
+
+```bash
+./mvnw -pl drmq-broker exec:java -Dexec.args="--port 9092 --data-dir ./data-1"
+```
+
+When the broker starts successfully, you will see log output similar to:
+
+```text
+INFO  c.d.b.BrokerServer - Single-node mode (no Raft)
+INFO  c.d.b.BrokerServer - DRMQ Broker started on port 9092 with data directory ./data-1
+```
+
+<Note>
+  In single-node mode the broker logs `Single-node mode (no Raft)` at startup. No quorum is required, so every `send()` call returns a committed offset without waiting for replication. This means throughput is limited only by local disk I/O.
+</Note>
+
+## Key startup flags
+
+The three flags most relevant to single-node operation are:
+
+<ParamField path="--port" type="int" default="9092">
+  The TCP port the broker listens on for client connections.
+</ParamField>
+
+<ParamField path="--data-dir" type="string" default="./data">
+  The local filesystem path where the broker stores its write-ahead log and segment files. The directory is created automatically if it does not exist.
+</ParamField>
+
+<ParamField path="--node-id" type="string" default="standalone">
+  A human-readable identifier for this broker instance. In single-node mode the default value `standalone` is sufficient; you only need to change it when promoting the node into a cluster.
+</ParamField>
+
+For a full list of every supported flag, including metrics, log retention, and DLQ settings, see the [Configuration Reference](/broker/configuration-reference).
+
+## Override defaults at startup
+
+Customize the port and data directory by passing the flags explicitly:
+
+```bash
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--node-id dev-node --port 9099 --data-dir /var/drmq/data"
+```
+
+## Connect a client
+
+Point your producer or consumer at `localhost:<port>`. Both the Java and Python clients accept a bootstrap address string:
+
+```java
+// Java — connect a producer to the single-node broker
+try (DRMQProducer producer = new DRMQProducer("localhost:9092")) {
+    producer.connect();
+    DRMQProducer.SendResult result = producer.send("my-topic", "Hello, DRMQ!");
+
+    if (result.isSuccess()) {
+        System.out.println("Message sent at offset " + result.getOffset());
+    }
+}
+```
+
+```python
+# Python — connect a producer to the single-node broker
+from drmq_client import DRMQProducer
+
+producer = DRMQProducer("localhost:9092")
+producer.connect()
+result = producer.send("my-topic", b"Hello, DRMQ!")
+print(f"Sent at offset {result.offset}")
+```
+
+<Tip>
+  You can also use the interactive CLI to manually send and receive test messages without writing any code. Run `mvn exec:java -Dexec.mainClass="com.drmq.client.commandLineExample.ProducerApp" -Dexec.args="localhost:9092"` from the `drmq-client` directory.
+</Tip>
+
+## Next steps
+
+Once you are ready to move from development to a fault-tolerant setup, read [Set Up a DRMQ Cluster](/broker/cluster-setup) to learn how to start a 3-node cluster with Raft consensus and automatic leader failover.

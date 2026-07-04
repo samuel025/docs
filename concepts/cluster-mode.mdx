@@ -1,0 +1,148 @@
+---
+title: "High Availability with DRMQ Cluster Mode"
+sidebarTitle: "Cluster Mode"
+description: "Learn how DRMQ uses Raft consensus for leader election and log replication, and how to configure a fault-tolerant multi-node cluster for production."
+---
+
+For production workloads where a single broker outage is not acceptable, DRMQ includes a full implementation of the **Raft consensus algorithm**. Cluster mode replicates every write to a quorum of broker nodes before acknowledging producers, so your data survives individual node failures — including the loss of the leader itself. This page explains how Raft fits into DRMQ, how many nodes you need, and how to connect clients to a cluster.
+
+## How Raft Consensus Works in DRMQ
+
+Raft is a distributed consensus protocol that keeps a group of servers in agreement about an ordered sequence of log entries. DRMQ uses Raft as the backbone of its storage engine:
+
+<Steps>
+  <Step title="Leader election">
+    When a cluster starts (or the current leader becomes unreachable), the nodes hold an election. The candidate that receives a majority of votes becomes the new leader and begins accepting client writes. Followers acknowledge the new leader's authority and replicate its log.
+  </Step>
+  <Step title="Quorum writes">
+    Every produce request that reaches the leader is written to the Raft log and replicated to followers. The leader returns a success response to the producer only after a **majority (quorum) of nodes** confirm they have persisted the entry. This makes acknowledged writes durable even if the leader crashes immediately afterward.
+  </Step>
+  <Step title="Log replication">
+    Followers continuously replicate entries from the leader. A follower that falls behind — due to a restart, slow network, or temporary partition — catches up automatically by receiving the missing log entries from the leader or, if the gap is large, by installing a Raft snapshot.
+  </Step>
+  <Step title="Snapshots and log compaction">
+    When the Raft log grows beyond the compact threshold (default: **1,000 entries**, configurable via `--raft-compact-threshold`), the leader creates a snapshot of the current state and truncates the log prefix. Followers install the snapshot to catch up efficiently without replaying thousands of individual entries.
+  </Step>
+</Steps>
+
+## How Many Nodes Do You Need?
+
+Raft requires a **majority quorum** to make progress. A cluster of `2f + 1` nodes tolerates `f` simultaneous failures:
+
+| Cluster size | Failures tolerated | Minimum nodes for writes |
+|---|---|---|
+| 1 node | 0 | 1 |
+| 3 nodes | 1 | 2 |
+| 5 nodes | 2 | 3 |
+| 7 nodes | 3 | 4 |
+
+<Note>
+  A 3-node cluster is the recommended minimum for production. It tolerates the loss of one node (for example, during a rolling upgrade or an unexpected crash) while still accepting writes. A 5-node cluster tolerates two simultaneous failures, which is appropriate for deployments spanning multiple availability zones.
+</Note>
+
+## Leader Writes and Follower-Based Reads
+
+In DRMQ's cluster model:
+
+- **All writes go to the leader.** If a producer or consumer sends a request to a follower, the follower responds with `NOT_LEADER:<leaderAddress>`. The client library uses this response to redirect automatically to the correct node.
+- **Reads can be served by followers.** DRMQ supports **follower-based reads**, distributing the consumer poll load across the cluster rather than concentrating it on the leader. This improves read throughput and frees the leader to focus on replication and new writes.
+
+## Client Failover and Leader Redirect
+
+Pass a comma-separated **bootstrap server list** to `DRMQProducer` or `DRMQConsumer`. The client picks a random server from the list on startup and cycles through the remaining servers if that connection fails. You do not need to know which node is the leader in advance.
+
+```java
+// Producer connecting to a 3-node cluster
+try (DRMQProducer producer = new DRMQProducer("localhost:9092,localhost:9093,localhost:9094")) {
+    producer.connect();
+    DRMQProducer.SendResult result = producer.send("orders", "{ \"id\": 1 }");
+
+    if (result.isSuccess()) {
+        System.out.println("Stored at offset " + result.getOffset());
+    }
+}
+```
+
+```java
+// Consumer connecting to the same cluster
+DRMQConsumer consumer = new DRMQConsumer(
+    "localhost:9092,localhost:9093,localhost:9094",
+    "order-processors"
+);
+consumer.setAutoCommit(true);
+consumer.connect();
+consumer.subscribe("orders");
+```
+
+The failover sequence works like this:
+
+<Steps>
+  <Step title="Client picks a random bootstrap server">
+    On `connect()`, the client picks a random entry from the bootstrap list using `ThreadLocalRandom` to spread initial connection load across all nodes.
+  </Step>
+  <Step title="Broker returns NOT_LEADER if needed">
+    If the connected node is a follower and cannot serve the request, it responds with `NOT_LEADER:<leaderHost>:<leaderPort>`. The client immediately reconnects to the indicated leader address without surfacing the error to your application code.
+  </Step>
+  <Step title="Client rotates on connection failure">
+    If the TCP connection drops entirely (leader crash, network partition), the client rotates to the next server in the bootstrap list and retries up to `MAX_RETRIES × bootstrap-server-count` times, pausing briefly between attempts to allow a new leader election to complete.
+  </Step>
+</Steps>
+
+## Quorum-Loss Stepdown: Preventing Split-Brain
+
+If the current leader loses contact with enough followers that it can no longer form a quorum, it **steps down voluntarily** rather than continuing to accept writes. This **Quorum-Loss Stepdown** feature prevents split-brain scenarios where two nodes simultaneously believe they are the leader and accept conflicting writes.
+
+When a leader steps down:
+
+1. It stops accepting new produce requests and returns `NOT_LEADER` to clients.
+2. The remaining reachable nodes hold a new election.
+3. The new leader resumes writes once it secures a majority vote.
+
+Clients experience this as a brief period of `NOT_LEADER` responses followed by automatic reconnect to the new leader — no manual intervention is required.
+
+## Single-Node Mode: No Raft Overhead
+
+<Note>
+  If you start a broker with **no `--peers` argument**, it runs in **single-node mode** with all Raft consensus logic disabled. There is no election overhead, no replication latency, and no quorum requirement. Single-node mode is ideal for local development, CI pipelines, and integration testing. To enable cluster mode, add at least two peers when starting each broker node.
+</Note>
+
+You can confirm which mode a running broker is in by checking `BrokerConfig.isClusterMode()` — it returns `true` only when the peer list is non-empty.
+
+## Configuring a Cluster
+
+Start each broker node with a unique `--node-id`, its own `--port` and `--data-dir`, and the `--peers` list of all other nodes in the cluster. The format for each peer is `<nodeId>:<host>:<port>`.
+
+<CodeGroup>
+  ```bash Node 1
+  ./mvnw -pl drmq-broker exec:java \
+    -Dexec.args="--node-id 1 --port 9092 --data-dir ./data-1 \
+                 --peers 2:localhost:9093,3:localhost:9094"
+  ```
+
+  ```bash Node 2
+  ./mvnw -pl drmq-broker exec:java \
+    -Dexec.args="--node-id 2 --port 9093 --data-dir ./data-2 \
+                 --peers 1:localhost:9092,3:localhost:9094"
+  ```
+
+  ```bash Node 3
+  ./mvnw -pl drmq-broker exec:java \
+    -Dexec.args="--node-id 3 --port 9094 --data-dir ./data-3 \
+                 --peers 1:localhost:9092,2:localhost:9093"
+  ```
+</CodeGroup>
+
+Each node must be able to reach every other node on its declared port. Start all three nodes before producing any messages; the cluster elects a leader once a majority (2 of 3) are online.
+
+For a full deployment guide including network firewall requirements and production tuning, see the [Cluster Setup guide](/broker/cluster-setup).
+
+## Observability in Cluster Mode
+
+DRMQ exposes Prometheus metrics on port `9096` (configurable via `--metrics-port`) at the `/metrics` path. The following metrics are particularly useful for monitoring cluster health:
+
+| Metric | Description |
+|---|---|
+| `drmq_raft_state` | Current role of this node: `Leader`, `Follower`, or `Candidate` |
+| `drmq_messages_produced_total` | Total messages successfully appended to the leader's log |
+| `drmq_messages_consumed_total` | Total messages delivered to consumers across all groups |
+| `drmq_log_size_bytes` | Current on-disk size of the WAL segments |

@@ -1,0 +1,176 @@
+---
+title: "Install and Build DRMQ from Source"
+sidebarTitle: "Installation"
+description: "Clone the DRMQ repository, satisfy the Java and Maven prerequisites, build all modules from source, and verify your installation."
+---
+
+DRMQ is distributed as source code and built with Apache Maven. The build process compiles all modules, generates Java classes from the Protocol Buffers definitions in `drmq-protocol`, and packages the broker and client JARs. This page covers every step from an empty directory to a running broker.
+
+## Prerequisites
+
+You need two tools before you build DRMQ. No other runtime dependencies or external services are required.
+
+| Tool | Minimum version | Notes |
+|---|---|---|
+| Java Development Kit (JDK) | 17 | Any distribution (OpenJDK, Eclipse Temurin, Amazon Corretto, etc.) works. DRMQ uses `java.util.concurrent` virtual-thread-friendly patterns and Java records, both of which require Java 17+. |
+| Apache Maven | 3.8.x | Manages the multi-module build, dependency resolution, and the protobuf code generation plugin. Maven 3.9.x is also fully supported. |
+
+<Note>
+  If you don't want to install Maven globally, skip ahead — the repository ships with a **Maven wrapper** (`mvnw` on macOS/Linux, `mvnw.cmd` on Windows) that downloads the correct Maven version automatically on first use. Substitute `./mvnw` for every `mvn` command on this page.
+</Note>
+
+To verify your environment, run:
+
+```bash
+java -version
+mvn -version
+```
+
+Both commands should print version information without errors.
+
+## Build Steps
+
+<Steps>
+
+  <Step title="Clone the Repository">
+    Clone the DRMQ source code from GitHub and change into the project root:
+
+    ```bash
+    git clone https://github.com/samuel025/DRMQ.git
+    cd DRMQ
+    ```
+
+    The repository root contains the parent `pom.xml` that declares all four Maven modules. Every subsequent Maven command must be run from this directory unless stated otherwise.
+  </Step>
+
+  <Step title="Build All Modules">
+    Run a clean install from the project root to compile the entire project:
+
+    ```bash
+    mvn clean install
+    ```
+
+    Maven processes the modules in dependency order:
+
+    1. **`drmq-protocol`** — The `protoc` compiler generates Java classes from all `.proto` files. These generated sources are placed in each module's `target/generated-sources` directory and made available to downstream modules automatically.
+    2. **`drmq-broker`** — Compiles the broker server, Raft implementation, WAL storage engine, and Netty TCP layer against the generated protocol classes.
+    3. **`drmq-client`** — Compiles `DRMQProducer` and `DRMQConsumer` and packages the client JAR you add as a dependency in your own projects.
+    4. **`drmq-integration-tests`** — Compiles and runs end-to-end tests that spin up real in-process broker instances.
+
+    <Note>
+      The first build downloads all dependencies from Maven Central. Expect it to take a couple of minutes on a fresh machine. Subsequent builds are much faster because artifacts are cached in your local `~/.m2/repository`.
+    </Note>
+
+    To skip the integration tests and speed up the build during development, add `-DskipTests`:
+
+    ```bash
+    mvn clean install -DskipTests
+    ```
+  </Step>
+
+  <Step title="Verify the Build">
+    A successful build ends with a summary like this:
+
+    ```
+    [INFO] ------------------------------------------------------------------------
+    [INFO] Reactor Summary for DRMQ - Distributed Reliable Message Queue 1.0.0-SNAPSHOT:
+    [INFO]
+    [INFO] drmq-protocol ...................................... SUCCESS
+    [INFO] drmq-broker ........................................ SUCCESS
+    [INFO] drmq-client ........................................ SUCCESS
+    [INFO] drmq-integration-tests ............................. SUCCESS
+    [INFO] ------------------------------------------------------------------------
+    [INFO] BUILD SUCCESS
+    [INFO] ------------------------------------------------------------------------
+    ```
+
+    If any module shows `FAILURE`, scroll up in the output to find the first error — Maven stops processing dependents as soon as a module fails. Common causes include a JDK version below 17 or a network issue preventing dependency downloads.
+
+    Confirm the broker JAR was produced:
+
+    ```bash
+    ls drmq-broker/target/*.jar
+    ```
+
+    You should see at least one JAR file, for example `drmq-broker-1.0.0-SNAPSHOT.jar`.
+  </Step>
+
+</Steps>
+
+## Module Structure
+
+The repository is a multi-module Maven project. Understanding what each module contains helps you navigate the codebase and know which artifact to include in your own projects.
+
+<CardGroup cols={2}>
+  <Card title="drmq-protocol" icon="file-code">
+    Defines all Protocol Buffers (`.proto`) message types used for client-broker communication and inter-broker Raft RPC. Compile this module first—all other modules depend on its generated Java classes.
+  </Card>
+  <Card title="drmq-broker" icon="server">
+    The message broker server. Contains the Raft node logic (leader election, log replication, quorum-loss stepdown), the Netty-based TCP listener, the segment-based Write-Ahead Log storage engine, and atomic consumer offset tracking.
+  </Card>
+  <Card title="drmq-client" icon="plug">
+    The Java client library. Provides `DRMQProducer` and `DRMQConsumer` with automatic reconnects, randomized bootstrap server selection, transparent leader-redirection, and at-least-once delivery semantics.
+  </Card>
+  <Card title="drmq-integration-tests" icon="flask">
+    End-to-end test suite. Spins up real broker instances in-process to verify multi-node failover, DLQ routing, offset management, and consumer group coordination.
+  </Card>
+</CardGroup>
+
+## Running the Broker
+
+After a successful build, start the broker directly from the project root using the Maven exec plugin.
+
+### Single-Node Mode
+
+Use single-node mode for local development and testing. It requires no peer configuration:
+
+```bash
+./mvnw -pl drmq-broker exec:java -Dexec.args="--port 9092 --data-dir ./data-1"
+```
+
+| Flag | Description |
+|---|---|
+| `--port` | TCP port the broker listens on (default `9092`) |
+| `--data-dir` | Directory where the WAL and offset state are persisted |
+
+### Cluster Mode
+
+For production deployments that require fault tolerance, start three nodes and provide each with the addresses of its peers:
+
+```bash
+# Node 1
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--node-id 1 --port 9092 --data-dir ./data-1 --peers 2:localhost:9093,3:localhost:9094"
+
+# Node 2
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--node-id 2 --port 9093 --data-dir ./data-2 --peers 1:localhost:9092,3:localhost:9094"
+
+# Node 3
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--node-id 3 --port 9094 --data-dir ./data-3 --peers 1:localhost:9092,2:localhost:9093"
+```
+
+<Warning>
+  Each node must use a separate `--data-dir`. Sharing a data directory between nodes corrupts the Write-Ahead Log.
+</Warning>
+
+For a detailed walk-through of cluster topology, Raft leader election, and follower-based reads, see the [Cluster Mode](/concepts/cluster-mode) guide.
+
+## Using the Maven Wrapper
+
+The Maven wrapper (`mvnw`) is a shell script committed to the repository that downloads and runs a pinned Maven version without requiring a system-wide installation. It is the recommended way to build DRMQ in CI environments and on machines where you don't want to manage Maven versions manually.
+
+```bash
+# macOS / Linux
+./mvnw clean install
+
+# Windows
+mvnw.cmd clean install
+```
+
+The wrapper stores the downloaded Maven distribution in `.mvn/wrapper/` inside the repository. If the wrapper binary is missing execute permission on your system, restore it with:
+
+```bash
+chmod +x mvnw
+```

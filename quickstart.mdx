@@ -1,47 +1,189 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with DRMQ in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Clone, build, and run DRMQ locally, then send and consume your first message using the Java producer and consumer APIs."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through getting a DRMQ broker running on your machine and exchanging your first message end-to-end. You'll clone the repository, build all modules with Maven, start a single-node broker, and use `DRMQProducer` and `DRMQConsumer` to produce and consume a message. The whole process takes less than five minutes.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Check Prerequisites">
+    Confirm you have the required tools installed before you begin.
+
+    | Tool | Minimum version | Check command |
+    |---|---|---|
+    | Java (JDK) | 17 | `java -version` |
+    | Apache Maven | 3.8.x | `mvn -version` |
+
+    <Tip>
+      If you don't have Maven installed locally, don't worry — the repository ships with a Maven wrapper (`mvnw`). You can substitute `./mvnw` for every `mvn` command in this guide.
+    </Tip>
+  </Step>
+
+  <Step title="Clone and Build">
+    Clone the repository and run a full build from the root directory. Maven will compile all modules, generate the Protocol Buffers Java classes from `drmq-protocol`, and package the broker and client JARs.
 
     ```bash
-    npm install your-package
+    git clone https://github.com/samuel025/DRMQ.git
+    cd DRMQ
+    mvn clean install
     ```
+
+    A successful build ends with output similar to:
+
+    ```
+    [INFO] BUILD SUCCESS
+    [INFO] Total time: ...
+    ```
+
+    <Note>
+      The first build downloads dependencies from Maven Central. Subsequent builds are significantly faster because artifacts are cached in your local `~/.m2` repository.
+    </Note>
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Start the Broker">
+    Start a single-node broker on port `9092`. The `--data-dir` flag tells the broker where to persist its Write-Ahead Log segments.
 
     ```bash
-    your-cli init
+    ./mvnw -pl drmq-broker exec:java -Dexec.args="--port 9092 --data-dir ./data-1"
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+    Watch the logs for a line confirming the broker is ready to accept connections:
+
     ```
+    INFO  DRMQBroker - Broker started on port 9092
+    ```
+
+    Leave this terminal open. Open a new terminal for the next steps.
+
+    <Tip>
+      To run a fault-tolerant three-node cluster instead, see the [Cluster Mode](/concepts/cluster-mode) guide.
+    </Tip>
   </Step>
+
+  <Step title="Send a Message">
+    Add `drmq-client` as a dependency in your project's `pom.xml`, then use `DRMQProducer` to publish a message. The producer accepts a comma-separated list of bootstrap servers so it can automatically fail over if one node goes down.
+
+    ```xml
+    <dependency>
+        <groupId>com.drmq</groupId>
+        <artifactId>drmq-client</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </dependency>
+    ```
+
+    ```java
+    import com.drmq.client.DRMQProducer;
+
+    // Pass a comma-separated bootstrap list for automatic failover.
+    try (DRMQProducer producer = new DRMQProducer("localhost:9092")) {
+        producer.connect();
+
+        DRMQProducer.SendResult result = producer.send("my-topic", "Hello, DRMQ!");
+
+        if (result.isSuccess()) {
+            System.out.println("Message sent at offset " + result.getOffset());
+        } else {
+            System.err.println("Send failed: " + result.getErrorMessage());
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+    ```
+
+    A successful send prints the assigned log offset, for example:
+
+    ```
+    Message sent at offset 0
+    ```
+
+    <Note>
+      `DRMQProducer` implements `AutoCloseable`. Wrapping it in a try-with-resources statement ensures the TCP connection is always closed cleanly.
+    </Note>
+  </Step>
+
+  <Step title="Consume a Message">
+    Use `DRMQConsumer` to read the message you just sent. Provide a consumer group name to enable load-balanced group mode — the broker coordinates offset dispatch so each message is delivered to exactly one consumer within the group.
+
+    <Tabs>
+      <Tab title="Group Mode (Recommended)">
+        Group mode is the default when you supply a consumer group name. The broker tracks offsets for you and distributes messages across all consumers sharing the same group.
+
+        ```java
+        import com.drmq.client.DRMQConsumer;
+        import java.util.List;
+
+        DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group");
+        consumer.setAutoCommit(true);
+        consumer.connect();
+        consumer.subscribe("my-topic");
+
+        while (true) {
+            List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);
+            for (DRMQConsumer.ConsumedMessage msg : messages) {
+                System.out.printf("Received (offset %d): %s%n",
+                        msg.offset(), msg.payloadAsString());
+            }
+        }
+        ```
+      </Tab>
+      <Tab title="Single Mode (Manual Offset Control)">
+        Disable group mode when you need precise control—for example, to replay messages from a specific offset.
+
+        ```java
+        import com.drmq.client.DRMQConsumer;
+        import java.util.List;
+
+        try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group")) {
+            consumer.setGroupMode(false); // Disable broker-side coordination
+            consumer.connect();
+
+            // Start from offset 0 to replay from the beginning
+            consumer.subscribe("my-topic", 0);
+
+            while (true) {
+                List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);
+                for (DRMQConsumer.ConsumedMessage msg : messages) {
+                    System.out.printf("Replaying (offset %d): %s%n",
+                            msg.offset(), msg.payloadAsString());
+                }
+
+                // Manually commit after processing
+                if (!messages.isEmpty()) {
+                    long lastOffset = messages.get(messages.size() - 1).offset();
+                    consumer.commit("my-topic", lastOffset + 1);
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        ```
+      </Tab>
+    </Tabs>
+
+    <Note>
+      `poll(maxMessages, timeoutMs)` uses long-polling: the broker waits up to `timeoutMs` milliseconds before returning an empty response. This keeps your polling loop efficient without busy-waiting.
+    </Note>
+  </Step>
+
+  <Step title="Next Steps">
+    You've produced and consumed your first message. Explore these topics to make the most of DRMQ in production:
+
+    <CardGroup cols={2}>
+      <Card title="Consumer Groups" icon="users" href="/concepts/consumer-groups">
+        Scale processing horizontally. Start multiple consumers with the same group name and let the broker distribute the load.
+      </Card>
+      <Card title="Dead-Letter Queues" icon="circle-xmark" href="/features/dead-letter-queues">
+        Handle unprocessable messages gracefully. Use `consumer.nack()` to reject a message; after the threshold is reached, it's routed to a DLQ automatically.
+      </Card>
+      <Card title="Cluster Setup" icon="server" href="/concepts/cluster-mode">
+        Deploy a fault-tolerant three-node cluster with Raft consensus, quorum-loss protection, and follower-based reads.
+      </Card>
+      <Card title="SDKs" icon="code" href="/sdks">
+        Use DRMQ from Python or TypeScript. The Python and Node.js/TypeScript SDKs support the same group mode, failover, and auto-commit features as the Java client.
+      </Card>
+    </CardGroup>
+  </Step>
+
 </Steps>
-
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>

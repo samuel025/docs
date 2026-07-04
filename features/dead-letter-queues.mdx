@@ -1,0 +1,132 @@
+---
+title: "Dead-Letter Queues: Handle Unprocessable Messages"
+sidebarTitle: "Dead-Letter Queues"
+description: "Learn how DRMQ automatically routes poison-pill messages to a Dead-Letter Queue after repeated failures, keeping your consumers unblocked."
+---
+
+When a consumer encounters a message it cannot process — a malformed payload, an invalid schema, or a dependency that is permanently unavailable — retrying indefinitely blocks every subsequent message in the queue. DRMQ solves this with Dead-Letter Queues (DLQs): after a configurable number of failed delivery attempts, the broker automatically moves the offending message to a separate DLQ topic and advances the consumer group's offset, so the rest of your queue keeps flowing.
+
+## How DLQs work
+
+Every time a consumer calls `nack()` on a message, the broker increments that message's delivery failure counter. Once the counter reaches the configured maximum (default **5**), the broker routes the message to a dedicated DLQ topic instead of requeueing it. The consumer group's offset advances past that message, unblocking all subsequent messages.
+
+### DLQ topic naming
+
+DLQ topics follow the pattern `dlq.<group>.<topic>`. For example, if your consumer group is `order-processors` and the source topic is `orders`, failed messages land in:
+
+```
+dlq.order-processors.orders
+```
+
+You can change the prefix with the `--dlq-topic-prefix` broker flag (default `dlq.`).
+
+## NACKing a message
+
+Call `consumer.nack(topic, offset)` to explicitly reject a message. The method returns a `boolean`:
+
+- `true` — the broker routed the message to the DLQ (max deliveries reached).
+- `false` — the broker requeued the message for redelivery to another consumer in the group.
+
+```java
+boolean routedToDlq = consumer.nack("orders", msg.offset());
+```
+
+<Note>
+  `nack()` is only supported in **group mode** (`groupMode = true`). Calling it when group mode is disabled throws an `IllegalStateException`.
+</Note>
+
+<Warning>
+  Single consumer mode does not support NACK. If you need DLQ behaviour, ensure you construct your consumer with a consumer group name so that group mode is enabled automatically.
+</Warning>
+
+## Full example: processing with NACK
+
+The following example shows the recommended pattern for processing messages with explicit NACK handling:
+
+```java
+try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092,localhost:9093", "order-processors")) {
+    consumer.connect();
+    consumer.subscribe("orders");
+
+    while (true) {
+        List<DRMQConsumer.ConsumedMessage> messages = consumer.poll();
+        for (DRMQConsumer.ConsumedMessage msg : messages) {
+            try {
+                processOrder(msg);                              // Your business logic
+                consumer.commit("orders", msg.offset() + 1);   // Acknowledge success
+            } catch (Exception e) {
+                // Explicitly reject the message on failure
+                boolean routedToDlq = consumer.nack("orders", msg.offset());
+                if (routedToDlq) {
+                    System.err.println("Poison pill routed to DLQ: " + msg.offset());
+                }
+            }
+        }
+    }
+} catch (IOException e) {
+    e.printStackTrace();
+}
+```
+
+## Consuming from the DLQ topic
+
+The DLQ topic is a standard DRMQ topic. Subscribe to it with a separate consumer to inspect or reprocess failed messages:
+
+```java
+try (DRMQConsumer dlqConsumer = new DRMQConsumer("localhost:9092,localhost:9093", "dlq-inspector")) {
+    dlqConsumer.connect();
+    dlqConsumer.subscribe("dlq.order-processors.orders");
+
+    List<DRMQConsumer.ConsumedMessage> failed = dlqConsumer.poll(100, 5000);
+    for (DRMQConsumer.ConsumedMessage msg : failed) {
+        System.out.printf("DLQ message at offset %d: %s%n", msg.offset(), msg.payloadAsString());
+    }
+}
+```
+
+## Configuration reference
+
+Use these broker startup flags to tune DLQ behaviour:
+
+<ParamField path="--max-deliveries" type="int" default="5">
+  The maximum number of delivery attempts before a message is routed to the DLQ. Must be a positive integer.
+</ParamField>
+
+<ParamField path="--dlq-topic-prefix" type="string" default="dlq.">
+  The string prepended to the consumer group and topic name when constructing the DLQ topic name. For example, a prefix of `dead.` produces topic names like `dead.order-processors.orders`.
+</ParamField>
+
+**Example — lower the threshold to 3 attempts and use a custom prefix:**
+
+```bash
+./mvnw -pl drmq-broker exec:java \
+  -Dexec.args="--port 9092 --data-dir ./data-1 --max-deliveries 3 --dlq-topic-prefix dead."
+```
+
+## FAQs
+
+<Accordion title="What happens after a message goes to the DLQ?">
+  The broker writes the message to the DLQ topic (e.g., `dlq.order-processors.orders`) as a normal persisted record. At the same time it advances the failing consumer group's committed offset past the problematic message. This means all consumers in that group immediately move on to the next message — the queue is fully unblocked. The DLQ topic retains the message for as long as your log-retention policy allows, giving you time to inspect and reprocess it.
+</Accordion>
+
+<Accordion title="Can I replay DLQ messages?">
+  Yes. Subscribe to the DLQ topic using **single consumer mode** (set `groupMode` to `false` and provide an explicit start offset) to read the messages without the broker coordinating delivery. You can then fix the underlying issue and republish the messages to the original topic using a producer.
+
+  ```java
+  try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "dlq-replay")) {
+      consumer.setGroupMode(false);
+      consumer.connect();
+      consumer.subscribe("dlq.order-processors.orders", 0); // replay from the start
+
+      List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 5000);
+      for (DRMQConsumer.ConsumedMessage msg : messages) {
+          System.out.printf("Replaying offset %d: %s%n", msg.offset(), msg.payloadAsString());
+          // Optionally republish to the original topic after fixing the issue
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Does NACKing a message affect other consumer groups?">
+  No. Each consumer group tracks its own delivery count independently. A message that one group NACKs and routes to its DLQ continues to be delivered normally to all other groups that are subscribed to the same source topic.
+</Accordion>
