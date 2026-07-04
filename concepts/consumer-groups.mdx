@@ -1,5 +1,5 @@
 ---
-title: "Consumer Groups and Load Balancing"
+title: "Consumer Groups and Fan-Out Load Balancing in DRMQ"
 sidebarTitle: "Consumer Groups"
 description: "Understand how DRMQ consumer groups distribute messages across multiple consumers and how fan-out lets independent groups each receive every message."
 ---
@@ -149,7 +149,7 @@ Because the same message can arrive more than once under at-least-once semantics
 
 ## Dead-Letter Queues for Unprocessable Messages
 
-If a consumer repeatedly fails to process a message, call `consumer.nack(topic, offset)` to explicitly reject it. The broker tracks delivery attempts; once a message exceeds the configured threshold (default: **5 attempts**, set by `maxDeliveries` in `BrokerConfig`), it is automatically routed to the Dead-Letter Queue topic `dlq.<groupName>.<topic>` and the group's offset advances past it, preventing queue blockage.
+If a consumer repeatedly fails to process a message, call `consumer.nack(topic, offset)` to explicitly reject it. The broker tracks delivery attempts; once a message exceeds the configured threshold (default: **5 attempts**, configurable via `--max-deliveries` at broker startup), it is automatically routed to the [Dead-Letter Queue](/features/dead-letter-queues) topic `dlq.<groupName>.<topic>` and the group's offset advances past it, preventing queue blockage.
 
 ```java
 try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "order-processors")) {

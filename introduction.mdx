@@ -1,7 +1,7 @@
 ---
-title: "DRMQ: Distributed Reliable Message Queue"
+title: "DRMQ: Distributed, Reliable Message Queue for Java"
 sidebarTitle: "Introduction"
-description: "DRMQ is a fault-tolerant message broker built from first principles, delivering guaranteed message ordering and high availability via Raft consensus."
+description: "DRMQ is a fault-tolerant distributed message broker built from first principles, with guaranteed message ordering and high availability via Raft consensus."
 ---
 
 DRMQ is a high-performance, fault-tolerant distributed message broker built from first principles. It uses a full implementation of the Raft consensus algorithm for leader election and log replication, giving you strong ordering guarantees and high availability without relying on external coordination services. Whether you're running a single node for local development or a three-node production cluster with automatic failover, DRMQ exposes the same clean producer and consumer API throughout.
@@ -43,14 +43,11 @@ Before you build or run DRMQ, make sure your environment meets these requirement
   The repository includes a Maven wrapper (`mvnw` / `mvnw.cmd`) so you don't need a system-wide Maven installation. See the [Installation guide](/installation) for details.
 </Note>
 
-## Architecture Overview
+## How It Works
 
-DRMQ is structured as a multi-module Maven build. Each module has a clearly defined responsibility, making the codebase straightforward to navigate and extend:
+DRMQ uses a custom TCP protocol backed by Protocol Buffers for all client-broker and broker-to-broker communication. The broker persists every message to a Write-Ahead Log before acknowledging a write, so no data is lost even if a node crashes immediately after a successful send.
 
-- **`drmq-protocol`** — Protocol Buffers (`.proto`) definitions that describe every message exchanged between clients and brokers, and between broker peers during Raft replication. This module is compiled first so the generated Java classes are available to all other modules.
-- **`drmq-broker`** — The core server. Contains the Raft node logic, a Netty-based TCP server, the segment-based Write-Ahead Log (WAL) storage engine, and atomic consumer offset management.
-- **`drmq-client`** — The Java client library. Exposes `DRMQProducer` and `DRMQConsumer` with automatic reconnects, randomized bootstrap server selection, and transparent leader-redirection on `NOT_LEADER` responses.
-- **`drmq-integration-tests`** — End-to-end tests that spin up real broker instances to verify multi-node scenarios, DLQ routing, and failover behaviour.
+In cluster mode, the Raft consensus algorithm replicates each WAL entry to a quorum of nodes before the leader acknowledges the write to the client. If the leader fails, the remaining nodes elect a new leader and resume serving traffic automatically. The Java client detects `NOT_LEADER` responses and transparently reconnects to the current leader, so your application code never needs to handle cluster topology changes directly.
 
 ## Next Steps
 

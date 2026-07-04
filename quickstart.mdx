@@ -1,7 +1,7 @@
 ---
-title: "Get Started with DRMQ in 5 Minutes"
+title: "Send Your First Message with DRMQ: Java Quickstart Guide"
 sidebarTitle: "Quickstart"
-description: "Clone, build, and run DRMQ locally, then send and consume your first message using the Java producer and consumer APIs."
+description: "Clone, build, and run DRMQ locally, then send and receive your first message end-to-end using the DRMQProducer and DRMQConsumer Java APIs."
 ---
 
 This guide walks you through getting a DRMQ broker running on your machine and exchanging your first message end-to-end. You'll clone the repository, build all modules with Maven, start a single-node broker, and use `DRMQProducer` and `DRMQConsumer` to produce and consume a message. The whole process takes less than five minutes.
@@ -32,7 +32,7 @@ This guide walks you through getting a DRMQ broker running on your machine and e
 
     A successful build ends with output similar to:
 
-    ```
+    ```text
     [INFO] BUILD SUCCESS
     [INFO] Total time: ...
     ```
@@ -51,7 +51,7 @@ This guide walks you through getting a DRMQ broker running on your machine and e
 
     Watch the logs for a line confirming the broker is ready to accept connections:
 
-    ```
+    ```text
     INFO  DRMQBroker - Broker started on port 9092
     ```
 
@@ -94,7 +94,7 @@ This guide walks you through getting a DRMQ broker running on your machine and e
 
     A successful send prints the assigned log offset, for example:
 
-    ```
+    ```text
     Message sent at offset 0
     ```
 
@@ -112,19 +112,23 @@ This guide walks you through getting a DRMQ broker running on your machine and e
 
         ```java
         import com.drmq.client.DRMQConsumer;
+        import java.io.IOException;
         import java.util.List;
 
-        DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group");
-        consumer.setAutoCommit(true);
-        consumer.connect();
-        consumer.subscribe("my-topic");
+        try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group")) {
+            consumer.setAutoCommit(true);
+            consumer.connect();
+            consumer.subscribe("my-topic");
 
-        while (true) {
-            List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);
-            for (DRMQConsumer.ConsumedMessage msg : messages) {
-                System.out.printf("Received (offset %d): %s%n",
-                        msg.offset(), msg.payloadAsString());
+            while (true) {
+                List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);
+                for (DRMQConsumer.ConsumedMessage msg : messages) {
+                    System.out.printf("Received (offset %d): %s%n",
+                            msg.offset(), msg.payloadAsString());
+                }
             }
+        } catch (IOException e) {
+            e.printStackTrace();
         }
         ```
       </Tab>

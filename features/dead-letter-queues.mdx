@@ -1,5 +1,5 @@
 ---
-title: "Dead-Letter Queues: Handle Unprocessable Messages"
+title: "DRMQ Dead-Letter Queues: Handle Poison-Pill Messages"
 sidebarTitle: "Dead-Letter Queues"
 description: "Learn how DRMQ automatically routes poison-pill messages to a Dead-Letter Queue after repeated failures, keeping your consumers unblocked."
 ---
@@ -14,7 +14,7 @@ Every time a consumer calls `nack()` on a message, the broker increments that me
 
 DLQ topics follow the pattern `dlq.<group>.<topic>`. For example, if your consumer group is `order-processors` and the source topic is `orders`, failed messages land in:
 
-```
+```text
 dlq.order-processors.orders
 ```
 

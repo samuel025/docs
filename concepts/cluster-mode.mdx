@@ -1,5 +1,5 @@
 ---
-title: "High Availability with DRMQ Cluster Mode"
+title: "DRMQ Cluster Mode: Raft Consensus and High Availability"
 sidebarTitle: "Cluster Mode"
 description: "Learn how DRMQ uses Raft consensus for leader election and log replication, and how to configure a fault-tolerant multi-node cluster for production."
 ---
@@ -106,7 +106,7 @@ Clients experience this as a brief period of `NOT_LEADER` responses followed by 
   If you start a broker with **no `--peers` argument**, it runs in **single-node mode** with all Raft consensus logic disabled. There is no election overhead, no replication latency, and no quorum requirement. Single-node mode is ideal for local development, CI pipelines, and integration testing. To enable cluster mode, add at least two peers when starting each broker node.
 </Note>
 
-You can confirm which mode a running broker is in by checking `BrokerConfig.isClusterMode()` — it returns `true` only when the peer list is non-empty.
+A broker running without any `--peers` argument treats itself as the sole node and skips all Raft overhead: no election timers, no replication, and no quorum requirement. To enable cluster mode, provide at least two peers when starting each broker node.
 
 ## Configuring a Cluster
 

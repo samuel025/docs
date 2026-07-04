@@ -1,10 +1,10 @@
 ---
-title: "DRMQ TypeScript Client SDK Reference"
+title: "DRMQ TypeScript SDK: Producing and Consuming Messages"
 sidebarTitle: "TypeScript SDK"
 description: "Produce and consume DRMQ messages from Node.js using the TypeScript SDK, with async/await, auto-failover, and consumer group support."
 ---
 
-The DRMQ TypeScript client provides a fully async, promise-based API for producing and consuming messages against a DRMQ broker cluster. It lives in the `drmq-ts-client/` directory of the repository and communicates with the broker using the same raw TCP/Protobuf protocol as the Java and Python SDKs. Both `DRMQProducer` and `DRMQConsumer` extend a shared `DRMQClient` base class that manages socket lifecycle, response demultiplexing, bootstrap-server rotation, and transparent leader redirection.
+The DRMQ TypeScript client provides a fully async, promise-based API for producing and consuming messages against a DRMQ broker cluster. It lives in the `drmq-ts-client/` directory of the repository and communicates with the broker using the same TCP/Protobuf protocol as the Java and Python SDKs. Both `DRMQProducer` and `DRMQConsumer` extend a shared `DRMQClient` base class that manages connection lifecycle, bootstrap-server rotation, and transparent leader redirection.
 
 ## Prerequisites
 
@@ -215,6 +215,10 @@ const consumer = new DRMQConsumer("localhost:9092");
 
 <ResponseField name="timestamp" type="number">
   Producer-set timestamp in milliseconds since epoch.
+</ResponseField>
+
+<ResponseField name="storedAt" type="number">
+  Broker-set timestamp in milliseconds since epoch, recorded when the message was durably persisted.
 </ResponseField>
 
 ---

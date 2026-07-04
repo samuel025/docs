@@ -1,5 +1,5 @@
 ---
-title: "DRMQ Python Client SDK Reference"
+title: "DRMQ Python Client SDK: Producer and Consumer Guide"
 sidebarTitle: "Python SDK"
 description: "Produce and consume DRMQ messages from Python using DRMQProducer and DRMQConsumer, with built-in leader failover and group-mode support."
 ---
@@ -67,7 +67,7 @@ producer = DRMQProducer("broker1:9092,broker2:9093,broker3:9094")
 </ParamField>
 
 <ParamField path="send(topic: str, payload: bytes, key: Optional[str] = None)" type="ProduceResponse">
-  Send `payload` to `topic`. Optionally attach a routing `key`. Returns a `ProduceResponse` protobuf object — check `.success` before reading `.offset`. The client retries up to `max_retries` (5) times, rotating bootstrap servers and following leader redirects automatically.
+  Send `payload` to `topic`. Optionally attach a routing `key`. Returns a `ProduceResponse` — check `.success` before reading `.offset`. The client retries up to five times, rotating bootstrap servers and following leader redirects automatically.
 </ParamField>
 
 <ParamField path="close()" type="None">
@@ -152,7 +152,7 @@ consumer = DRMQConsumer("localhost:9092")
 </ParamField>
 
 <ParamField path="poll(max_messages: int = 100, timeout_ms: int = 1000)" type="List[StoredMessage]">
-  Fetch up to `max_messages` from each subscribed topic. The broker waits up to `timeout_ms` milliseconds before returning an empty list. Returns a flat list of `StoredMessage` protobuf objects across all subscribed topics.
+  Fetch up to `max_messages` from each subscribed topic. The broker waits up to `timeout_ms` milliseconds before returning an empty list. Returns a flat list of `StoredMessage` objects across all subscribed topics.
 </ParamField>
 
 <ParamField path="commit(topic: str, offset: int)" type="None">

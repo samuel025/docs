@@ -1,5 +1,5 @@
 ---
-title: "Message Delivery Guarantees in DRMQ"
+title: "DRMQ Delivery Guarantees: Commits, NACKs, and DLQs"
 sidebarTitle: "Delivery Guarantees"
 description: "Explore DRMQ's at-least-once delivery model, commit semantics, NACK and DLQ handling, WAL durability, and strict per-topic message ordering."
 ---
@@ -81,7 +81,7 @@ DRMQ uses a **lease-based dispatch protocol** to handle in-flight messages safel
 
 ## NACK and Dead-Letter Queues
 
-If a message cannot be processed — for example, it fails schema validation or triggers an unrecoverable exception — call `consumer.nack(topic, offset)` to explicitly reject it. The broker increments the delivery count for that message. Once the delivery count reaches the **`maxDeliveries` threshold** (default: **5**, configurable via `--max-deliveries` at broker startup), the broker:
+If a message cannot be processed — for example, it fails schema validation or triggers an unrecoverable exception — call `consumer.nack(topic, offset)` to explicitly reject it. The broker increments the delivery count for that message. Once the delivery count reaches the **`maxDeliveries` threshold** (default: **5**, configurable via `--max-deliveries` at broker startup), the broker routes the message to a [Dead-Letter Queue](/features/dead-letter-queues). Specifically, it:
 
 1. Routes the message to the DLQ topic: `dlq.<groupName>.<originalTopic>`.
 2. Advances the group's offset past the problematic message, unblocking the rest of the queue.

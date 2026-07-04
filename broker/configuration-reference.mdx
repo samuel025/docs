@@ -1,7 +1,7 @@
 ---
-title: "DRMQ Broker Configuration Reference"
+title: "DRMQ Broker CLI Flags: Complete Configuration Reference"
 sidebarTitle: "Configuration"
-description: "Complete reference for every CLI flag accepted by the DRMQ broker at startup, including defaults, types, and valid value ranges."
+description: "Complete reference for every CLI flag accepted by the DRMQ broker at startup, including defaults, types, and valid value ranges for all settings."
 ---
 
 Every DRMQ broker option is configured through command-line arguments passed at startup — there is no separate configuration file. You provide flags as the value of `-Dexec.args` when using the Maven wrapper, or directly after the jar name when running a packaged artifact. Flags you omit fall back to the defaults documented below. The broker validates all values at startup and exits with a descriptive error message if an argument is invalid.

@@ -1,5 +1,5 @@
 ---
-title: "DRMQ Java Client SDK Reference"
+title: "DRMQ Java Client SDK — Producer and Consumer Guide"
 sidebarTitle: "Java SDK"
 description: "Send and consume messages in Java using DRMQProducer and DRMQConsumer, with auto-failover, consumer groups, and dead-letter queue support."
 ---
@@ -41,20 +41,29 @@ mvn clean install
 
 `DRMQProducer` sends messages to a DRMQ topic over a persistent TCP connection. It is thread-safe — multiple threads can call `send()` concurrently. When it receives a `NOT_LEADER` redirect from a follower node, it transparently reconnects to the reported leader and retries the send.
 
-### Constructor
+### Constructors
 
 ```java
 DRMQProducer(String bootstrapServers)
+DRMQProducer(String host, int port)
+DRMQProducer()
 ```
 
-Pass a comma-separated list of `host:port` addresses. The client picks a random starting server and rotates through the list on failure.
+`DRMQProducer(String bootstrapServers)` accepts a comma-separated list of `host:port` addresses. The client picks a random starting server and rotates through the list on failure, giving you both load distribution and resilience.
+
+`DRMQProducer(String host, int port)` targets a single broker directly when you already know the exact address.
+
+`DRMQProducer()` is a zero-argument convenience constructor that connects to `localhost:9092` — useful for local development and testing.
 
 ```java
-// Single broker (development)
-DRMQProducer producer = new DRMQProducer("localhost:9092");
-
-// Cluster (production) — provide all nodes for resilience
+// Bootstrap list — recommended for production clusters
 DRMQProducer producer = new DRMQProducer("broker1:9092,broker2:9093,broker3:9094");
+
+// Single broker — development or when the address is known
+DRMQProducer producer = new DRMQProducer("localhost", 9092);
+
+// Default localhost:9092 — local development shortcut
+DRMQProducer producer = new DRMQProducer();
 ```
 
 ### Methods
@@ -146,13 +155,19 @@ try (DRMQProducer producer = new DRMQProducer("localhost:9092,localhost:9093")) 
   </Card>
 </CardGroup>
 
-### Constructor
+### Constructors
 
 ```java
 DRMQConsumer(String bootstrapServers, String consumerGroup)
+DRMQConsumer(String bootstrapServers)
+DRMQConsumer(String host, int port)
 ```
 
-Passing a non-blank `consumerGroup` automatically enables group mode. Pass `null` or an empty string to start in single-consumer mode.
+`DRMQConsumer(String bootstrapServers, String consumerGroup)` is the most common constructor. Passing a non-blank `consumerGroup` automatically enables group mode. Pass `null` or an empty string to start in single-consumer mode.
+
+`DRMQConsumer(String bootstrapServers)` creates a consumer in single-consumer mode with no group — equivalent to passing `null` for `consumerGroup`.
+
+`DRMQConsumer(String host, int port)` targets a single broker directly when you already know the exact address.
 
 ### Methods
 
@@ -180,6 +195,10 @@ Passing a non-blank `consumerGroup` automatically enables group mode. Pass `null
   Fetch up to 100 messages with a 1-second broker-side wait. Convenience wrapper around `poll(int, long)`.
 </ParamField>
 
+<ParamField path="poll(int maxMessages)" type="List&lt;ConsumedMessage&gt;">
+  Fetch up to `maxMessages` from each subscribed topic with the default 1-second broker-side wait.
+</ParamField>
+
 <ParamField path="poll(int maxMessages, long timeoutMs)" type="List&lt;ConsumedMessage&gt;">
   Fetch up to `maxMessages` from each subscribed topic, waiting up to `timeoutMs` milliseconds on the broker side before returning an empty list.
 </ParamField>
@@ -194,6 +213,10 @@ Passing a non-blank `consumerGroup` automatically enables group mode. Pass `null
 
 <ParamField path="getCurrentOffset(String topic)" type="long">
   Returns the client's local tracking offset for `topic` — the next offset that will be requested on the following `poll()`.
+</ParamField>
+
+<ParamField path="getConsumerGroup()" type="String">
+  Returns the consumer group name provided at construction. Returns `null` when no group was set (single-consumer mode).
 </ParamField>
 
 <ParamField path="close()" type="void">

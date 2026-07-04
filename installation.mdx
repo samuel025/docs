@@ -1,7 +1,7 @@
 ---
-title: "Install and Build DRMQ from Source"
+title: "Install and Build DRMQ from Source: Step-by-Step Setup Guide"
 sidebarTitle: "Installation"
-description: "Clone the DRMQ repository, satisfy the Java and Maven prerequisites, build all modules from source, and verify your installation."
+description: "Clone the DRMQ repository, satisfy the Java and Maven prerequisites, build all modules from source, and verify your installation is working."
 ---
 
 DRMQ is distributed as source code and built with Apache Maven. The build process compiles all modules, generates Java classes from the Protocol Buffers definitions in `drmq-protocol`, and packages the broker and client JARs. This page covers every step from an empty directory to a running broker.
@@ -55,7 +55,7 @@ Both commands should print version information without errors.
     1. **`drmq-protocol`** — The `protoc` compiler generates Java classes from all `.proto` files. These generated sources are placed in each module's `target/generated-sources` directory and made available to downstream modules automatically.
     2. **`drmq-broker`** — Compiles the broker server, Raft implementation, WAL storage engine, and Netty TCP layer against the generated protocol classes.
     3. **`drmq-client`** — Compiles `DRMQProducer` and `DRMQConsumer` and packages the client JAR you add as a dependency in your own projects.
-    4. **`drmq-integration-tests`** — Compiles and runs end-to-end tests that spin up real in-process broker instances.
+    4. **`drmq-integration-tests`** — Runs the end-to-end test suite to verify the build is healthy.
 
     <Note>
       The first build downloads all dependencies from Maven Central. Expect it to take a couple of minutes on a fresh machine. Subsequent builds are much faster because artifacts are cached in your local `~/.m2/repository`.
@@ -71,7 +71,7 @@ Both commands should print version information without errors.
   <Step title="Verify the Build">
     A successful build ends with a summary like this:
 
-    ```
+    ```text
     [INFO] ------------------------------------------------------------------------
     [INFO] Reactor Summary for DRMQ - Distributed Reliable Message Queue 1.0.0-SNAPSHOT:
     [INFO]
@@ -103,16 +103,13 @@ The repository is a multi-module Maven project. Understanding what each module c
 
 <CardGroup cols={2}>
   <Card title="drmq-protocol" icon="file-code">
-    Defines all Protocol Buffers (`.proto`) message types used for client-broker communication and inter-broker Raft RPC. Compile this module first—all other modules depend on its generated Java classes.
+    Defines all Protocol Buffers (`.proto`) message types used for client-broker communication and inter-broker Raft RPC. Compiled first so the generated Java classes are available to all other modules.
   </Card>
   <Card title="drmq-broker" icon="server">
-    The message broker server. Contains the Raft node logic (leader election, log replication, quorum-loss stepdown), the Netty-based TCP listener, the segment-based Write-Ahead Log storage engine, and atomic consumer offset tracking.
+    The message broker server. Contains the Raft node logic (leader election, log replication, quorum-loss stepdown), the Netty-based TCP listener, the Write-Ahead Log storage engine, and consumer offset tracking.
   </Card>
   <Card title="drmq-client" icon="plug">
-    The Java client library. Provides `DRMQProducer` and `DRMQConsumer` with automatic reconnects, randomized bootstrap server selection, transparent leader-redirection, and at-least-once delivery semantics.
-  </Card>
-  <Card title="drmq-integration-tests" icon="flask">
-    End-to-end test suite. Spins up real broker instances in-process to verify multi-node failover, DLQ routing, offset management, and consumer group coordination.
+    The Java client library you add as a dependency in your own projects. Provides `DRMQProducer` and `DRMQConsumer` with automatic reconnects, randomized bootstrap server selection, transparent leader-redirection, and at-least-once delivery semantics.
   </Card>
 </CardGroup>
 
