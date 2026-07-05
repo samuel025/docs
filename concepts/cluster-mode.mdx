@@ -21,7 +21,7 @@ Raft is a distributed consensus protocol that keeps a group of servers in agreem
     Followers continuously replicate entries from the leader. A follower that falls behind — due to a restart, slow network, or temporary partition — catches up automatically by receiving the missing log entries from the leader or, if the gap is large, by installing a Raft snapshot.
   </Step>
   <Step title="Snapshots and log compaction">
-    When the Raft log grows beyond the compact threshold (default: **1,000 entries**, configurable via `--raft-compact-threshold`), the leader creates a snapshot of the current state and truncates the log prefix. Followers install the snapshot to catch up efficiently without replaying thousands of individual entries.
+    DRMQ uses a two-phase compaction strategy. The broker continuously trims its local Raft log entries that are well behind the last-applied index, keeping a large safety buffer (`raft-compact-threshold × 100`) to avoid trimming entries that lagging followers still need. A full state snapshot — a compressed archive of the `MessageStore` and `OffsetManager` — is only generated **on demand**, when a follower requests entries that have already fallen outside the trimmed window. The follower installs this snapshot and resumes normal replication from there.
   </Step>
 </Steps>
 
@@ -45,7 +45,12 @@ Raft requires a **majority quorum** to make progress. A cluster of `2f + 1` node
 In DRMQ's cluster model:
 
 - **All writes go to the leader.** If a producer or consumer sends a request to a follower, the follower responds with `NOT_LEADER:<leaderAddress>`. The client library uses this response to redirect automatically to the correct node.
-- **Reads can be served by followers.** DRMQ supports **follower-based reads**, distributing the consumer poll load across the cluster rather than concentrating it on the leader. This improves read throughput and frees the leader to focus on replication and new writes.
+- **Group-mode consumers must use the leader.** When a `DRMQConsumer` is constructed with a consumer group (the recommended, default mode), the broker checks `isLeader()` before serving the request and returns `NOT_LEADER` if on a follower — group-mode consumers are always redirected to the leader.
+- **Single-mode consumers can read from followers.** Consumers that use `setGroupMode(false)` to drive their own offsets skip the leader check and read directly from the local `MessageStore`. This is the supported path for distributing read load across follower nodes.
+
+<Note>
+  Follower-based reads are only available in **single-consumer mode** (`setGroupMode(false)`). If you need horizontal read scaling with consumer groups, run multiple group consumers against the leader — the broker's `ConsumerGroupCoordinator` handles load distribution without requiring follower reads.
+</Note>
 
 ## Client Failover and Leader Redirect
 
@@ -140,9 +145,13 @@ For a full deployment guide including network firewall requirements and producti
 
 DRMQ exposes Prometheus metrics on port `9096` (configurable via `--metrics-port`) at the `/metrics` path. The following metrics are particularly useful for monitoring cluster health:
 
-| Metric | Description |
-|---|---|
-| `drmq_raft_state` | Current role of this node: `Leader`, `Follower`, or `Candidate` |
-| `drmq_messages_produced_total` | Total messages successfully appended to the leader's log |
-| `drmq_messages_consumed_total` | Total messages delivered to consumers across all groups |
-| `drmq_log_size_bytes` | Current on-disk size of the WAL segments |
+| Metric | Type | Description |
+|---|---|---|
+| `drmq_broker_raft_is_leader` | Gauge | `1.0` if this node is the current leader, `0.0` otherwise |
+| `drmq_broker_raft_commit_index` | Gauge | The highest log index known to be committed across the cluster |
+| `drmq_broker_raft_last_applied` | Gauge | The highest log index applied to this node's state machine |
+| `drmq_broker_raft_replication_lag` | Gauge | Per-peer replication lag (tagged `peer_id`); non-zero only on the leader |
+| `drmq_broker_request_total` | Counter | Total requests tagged by `type` (`produce`/`consume`) and `outcome` |
+| `drmq_broker_log_segment_size_bytes` | Gauge | Active WAL segment size in bytes, tagged per `topic` |
+
+For the full metrics reference including request latency timers and connection counters, see the [Monitoring guide](/features/monitoring).
