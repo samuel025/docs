@@ -92,7 +92,7 @@ Before you start, make sure each machine or process that will run a broker node 
     ```
 
     <Tip>
-      Consumers can read from follower nodes, distributing read load across the cluster. Include all node addresses in the consumer bootstrap string for the same automatic failover behavior.
+      **Single-mode consumers** (`setGroupMode(false)`) can read from follower nodes, distributing read load across the cluster. Group-mode consumers (the default) are always redirected to the leader to coordinate offsets. Include all node addresses in the consumer bootstrap string for the same automatic failover behavior.
     </Tip>
   </Step>
 </Steps>

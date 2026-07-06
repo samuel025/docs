@@ -40,7 +40,7 @@ INFO  c.d.b.BrokerServer - DRMQ Broker started on port 9092 with data directory 
 ```
 
 <Note>
-  In single-node mode the broker logs `Single-node mode (no Raft)` at startup. No quorum is required, so every `send()` call returns a committed offset without waiting for replication. This means throughput is limited only by local disk I/O.
+  In single-node mode the broker logs `Single-node mode (no Raft)` at startup. No quorum is required, so every `send()` call returns a committed offset immediately. Writes are made to the OS page cache (RAM) and flushed asynchronously to disk. This means burst throughput is bounded by CPU and RAM rather than physical disk latency, but introduces the risk of data loss on machine power failure.
 </Note>
 
 ## Key startup flags

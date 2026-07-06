@@ -19,7 +19,11 @@ The DRMQ Java client is the primary SDK for producing and consuming messages aga
 
 ### Add the client to your Maven project
 
-Because the client lives in the same multi-module build, declare it as a module dependency in your `pom.xml`:
+`drmq-client` is **not published to Maven Central**. It is installed into your local `~/.m2/repository` when you run `mvn clean install` from the DRMQ repository root. You must run that command on any machine before the dependency below will resolve.
+
+<Warning>
+  If you add this dependency to a project on a machine that has never built the DRMQ source, Maven will fail with `Could not find artifact com.drmq:drmq-client:jar:1.0.0-SNAPSHOT`. Fix it by running `mvn clean install` from the DRMQ repo root first.
+</Warning>
 
 ```xml pom.xml
 <dependency>

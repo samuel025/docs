@@ -38,7 +38,7 @@ This guide walks you through getting a DRMQ broker running on your machine and e
     ```
 
     <Note>
-      The first build downloads dependencies from Maven Central. Subsequent builds are significantly faster because artifacts are cached in your local `~/.m2` repository.
+      The first build downloads **third-party dependencies** (Netty, Protobuf, SLF4J, etc.) from Maven Central and caches them in `~/.m2`. The DRMQ modules themselves (`drmq-client`, `drmq-broker`, etc.) are **not** published to Maven Central — they are installed into your local `~/.m2` by this `mvn clean install` command. This step is required before any other project can reference `drmq-client` as a dependency.
     </Note>
   </Step>
 
@@ -64,6 +64,10 @@ This guide walks you through getting a DRMQ broker running on your machine and e
 
   <Step title="Send a Message">
     Add `drmq-client` as a dependency in your project's `pom.xml`, then use `DRMQProducer` to publish a message. The producer accepts a comma-separated list of bootstrap servers so it can automatically fail over if one node goes down.
+
+    <Warning>
+      `drmq-client` is **not published to Maven Central**. The dependency below only resolves because `mvn clean install` in the previous step installed it into your local `~/.m2/repository`. Any project that references this dependency must be built on a machine where that install step has been run first.
+    </Warning>
 
     ```xml
     <dependency>

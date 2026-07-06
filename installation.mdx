@@ -58,7 +58,7 @@ Both commands should print version information without errors.
     4. **`drmq-integration-tests`** — Runs the end-to-end test suite to verify the build is healthy.
 
     <Note>
-      The first build downloads all dependencies from Maven Central. Expect it to take a couple of minutes on a fresh machine. Subsequent builds are much faster because artifacts are cached in your local `~/.m2/repository`.
+      The first build downloads **third-party dependencies** (Netty, Protobuf, SLF4J, Micrometer, etc.) from Maven Central and caches them in `~/.m2`. The DRMQ modules themselves (`drmq-protocol`, `drmq-broker`, `drmq-client`) are **not** on Maven Central — `mvn clean install` compiles and installs them into your local `~/.m2/repository` so they can be referenced as dependencies in your own projects. Subsequent builds are much faster because everything is already cached.
     </Note>
 
     To skip the integration tests and speed up the build during development, add `-DskipTests`:

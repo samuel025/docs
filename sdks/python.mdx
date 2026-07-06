@@ -119,7 +119,7 @@ finally:
 
 ## DRMQConsumer
 
-`DRMQConsumer` reads messages from one or more subscribed topics. Like the Java SDK, it supports **group mode** for load-balanced consumption and **single mode** for precise manual offset control. Set `auto_commit = True` to let the client commit offsets after each `poll()` automatically, or call `commit()` manually for exactly-once processing guarantees.
+`DRMQConsumer` reads messages from one or more subscribed topics. Like the Java SDK, it supports **group mode** for load-balanced consumption and **single mode** for precise manual offset control. Set `auto_commit = True` to let the client commit offsets after each `poll()` automatically (**at-most-once** delivery — messages may be lost on a crash but never duplicated), or call `commit()` manually after processing for **at-least-once** guarantees.
 
 ### Constructor
 
