@@ -4,7 +4,11 @@ sidebarTitle: "TypeScript SDK"
 description: "Produce and consume DRMQ messages from Node.js using the TypeScript SDK, with async/await, auto-failover, and consumer group support."
 ---
 
-The DRMQ TypeScript client provides a fully async, promise-based API for producing and consuming messages against a DRMQ broker cluster. It lives in the `drmq-ts-client/` directory of the repository and communicates with the broker using the same TCP/Protobuf protocol as the Java and Python SDKs. Both `DRMQProducer` and `DRMQConsumer` extend a shared `DRMQClient` base class that manages connection lifecycle, bootstrap-server rotation, and transparent leader redirection.
+The DRMQ TypeScript client provides a fully async, promise-based API for producing and consuming messages against a DRMQ broker cluster. It lives in the `drmq-ts-client/` directory of the repository and communicates with the broker using the same TCP/Protobuf protocol as the Java and Python SDKs. Both `DRMQProducer` and `DRMQConsumer` extend a shared `DRMQClient` base class that manages connection lifecycle, bootstrap-server rotation, and transparent leader redirection via typed `ErrorCode`s.
+
+<Info>
+  **Client-Side Batching:** Similar to the Java client, the `send()` method places messages into an internal accumulator queue. A dedicated background loop groups these messages into a single `ProduceBatchRequest`, waiting up to **5ms (`linger.ms`)** or until the batch reaches **16KB** before flushing to the network. This ensures extremely high throughput under load.
+</Info>
 
 ## Prerequisites
 
@@ -76,7 +80,7 @@ const producer = new DRMQProducer("broker1:9092,broker2:9093,broker3:9094");
 </ParamField>
 
 <ParamField path="await send(topic: string, payload: Uint8Array, key?: string)" type="Promise<ProduceResponse>">
-  Send `payload` to `topic`. Optionally attach a routing `key`. Returns a `ProduceResponse` — check `.success` before using `.offset`. The client handles leader redirection and connection failover internally.
+  Asynchronously queues `payload` to `topic`. Optionally attach a routing `key`. Returns a `ProduceResponse` — check `.success` before using `.offset`. The client handles leader redirection and connection failover internally.
 </ParamField>
 
 <ParamField path="close()" type="void">

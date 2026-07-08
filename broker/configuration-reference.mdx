@@ -50,6 +50,10 @@ java -jar drmq-broker.jar \
   How long the broker retains message segments before deleting them, in milliseconds. The default is 7 days (604,800,000 ms). Segments are eligible for deletion once they are older than this value **and** no longer the active write segment. Must be a positive integer.
 </ParamField>
 
+<ParamField path="--log-segment-fsync" type="boolean" default="true">
+  Whether the broker strictly flushes writes to disk (`fsync`) before acknowledging them to the client. The default is `true` for maximum durability. Set to `false` to disable synchronous flushes, vastly improving throughput at the risk of data loss during a sudden power failure.
+</ParamField>
+
 ---
 
 ## Cluster and Raft
@@ -163,3 +167,4 @@ This example uses:
 | `--metrics-disabled` | flag | — | Shorthand for `--metrics-enabled false` |
 | `--metrics-port` | int | `9096` | Prometheus HTTP port |
 | `--metrics-path` | string | `/metrics` | Prometheus HTTP path |
+| `--log-segment-fsync` | boolean | `true` | Force disk flush per batch |

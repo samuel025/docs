@@ -4,7 +4,11 @@ sidebarTitle: "Python SDK"
 description: "Produce and consume DRMQ messages from Python using DRMQProducer and DRMQConsumer, with built-in leader failover and group-mode support."
 ---
 
-The DRMQ Python client lets you send and receive messages using the same TCP/Protobuf protocol as the Java SDK. It lives in the `drmq-python-client/` directory of the DRMQ repository and requires no external broker-specific package — only the standard `protobuf` library. Both `DRMQProducer` and `DRMQConsumer` inherit from a shared `DRMQClient` base that manages connection pooling, bootstrap-server rotation, and transparent leader redirection so your code stays clean.
+The DRMQ Python client lets you send and receive messages using the same TCP/Protobuf protocol as the Java SDK. It lives in the `drmq-python-client/` directory of the DRMQ repository and requires no external broker-specific package — only the standard `protobuf` library. Both `DRMQProducer` and `DRMQConsumer` inherit from a shared `DRMQClient` base that manages connection pooling, bootstrap-server rotation, and transparent leader redirection via typed `ErrorCode`s.
+
+<Info>
+  **Client-Side Batching:** Similar to the Java client, the `send()` method places messages into an internal accumulator queue. A dedicated background thread groups these messages into a single `ProduceBatchRequest`, waiting up to **5ms (`linger.ms`)** or until the batch reaches **16KB** before flushing to the network. This provides massive throughput gains.
+</Info>
 
 ## Prerequisites
 
@@ -66,8 +70,8 @@ producer = DRMQProducer("broker1:9092,broker2:9093,broker3:9094")
   Opens a TCP socket to one of the bootstrap brokers. Call this once before sending any messages. Raises `DRMQConnectionError` if no broker is reachable after all retry attempts.
 </ParamField>
 
-<ParamField path="send(topic: str, payload: bytes, key: Optional[str] = None)" type="ProduceResponse">
-  Send `payload` to `topic`. Optionally attach a routing `key`. Returns a `ProduceResponse` — check `.success` before reading `.offset`. The client retries up to five times, rotating bootstrap servers and following leader redirects automatically.
+<ParamField path="send(topic: str, payload: bytes, key: Optional[str] = None)" type="concurrent.futures.Future">
+  Asynchronously queues `payload` to `topic`. Optionally attach a routing `key`. Returns a `Future` resolving to a `ProduceResponse` — check `.success` before reading `.offset`. The client retries up to five times, rotating bootstrap servers and following leader redirects automatically.
 </ParamField>
 
 <ParamField path="close()" type="None">
@@ -97,7 +101,7 @@ producer = DRMQProducer("localhost:9092,localhost:9093")
 try:
     producer.connect()
 
-    res = producer.send("python-topic", b"Hello from Python!")
+    res = producer.send("python-topic", b"Hello from Python!").result()
 
     if res.success:
         print(f"Message persisted at offset {res.offset}")
@@ -105,7 +109,7 @@ try:
         print(f"Send failed: {res.error_message}")
 
     # Send with an optional routing key
-    res2 = producer.send("orders", b'{"id": 42}', key="order-42")
+    res2 = producer.send("orders", b'{"id": 42}', key="order-42").result()
     print(f"Keyed send at offset {res2.offset}")
 finally:
     producer.close()

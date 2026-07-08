@@ -4,7 +4,11 @@ sidebarTitle: "Java SDK"
 description: "Send and consume messages in Java using DRMQProducer and DRMQConsumer, with auto-failover, consumer groups, and dead-letter queue support."
 ---
 
-The DRMQ Java client is the primary SDK for producing and consuming messages against a DRMQ broker cluster. It wraps the custom TCP/Protobuf protocol in a clean, synchronous API that handles automatic leader redirection, bootstrap-server failover, and offset management so that your application code stays focused on business logic. Both `DRMQProducer` and `DRMQConsumer` implement `AutoCloseable`, making them a natural fit with Java's try-with-resources statement.
+The DRMQ Java client is the primary SDK for producing and consuming messages against a DRMQ broker cluster. It wraps the custom TCP/Protobuf protocol in a clean, asynchronous API that handles automatic leader redirection via typed `ErrorCode`s, bootstrap-server failover, and offset management so that your application code stays focused on business logic. Both `DRMQProducer` and `DRMQConsumer` implement `AutoCloseable`, making them a natural fit with Java's try-with-resources statement.
+
+<Info>
+  **Client-Side Batching:** The `send()` method is asynchronous. It places messages into an internal accumulator queue. A background thread groups these into a single network batch, waiting up to **5ms (`linger.ms`)** or until the batch reaches **16KB**. This ensures extreme throughput under load.
+</Info>
 
 ## Prerequisites
 
@@ -76,16 +80,16 @@ DRMQProducer producer = new DRMQProducer();
   Opens the TCP connection to one of the bootstrap brokers. Call this once before any `send()`. Throws `IOException` if no broker is reachable after all retry attempts.
 </ParamField>
 
-<ParamField path="send(String topic, String message)" type="SendResult">
-  Encodes `message` as UTF-8 bytes and sends it to `topic`. Returns a `SendResult` describing success or failure.
+<ParamField path="send(String topic, String message)" type="CompletableFuture<SendResult>">
+  Encodes `message` as UTF-8 bytes and asynchronously queues it for batching.
 </ParamField>
 
-<ParamField path="send(String topic, byte[] payload)" type="SendResult">
-  Sends a raw byte payload to `topic`.
+<ParamField path="send(String topic, byte[] payload)" type="CompletableFuture<SendResult>">
+  Asynchronously queues a raw byte payload to `topic`.
 </ParamField>
 
-<ParamField path="send(String topic, byte[] payload, String key)" type="SendResult">
-  Sends a raw byte payload with an optional routing key. Pass `null` for `key` to omit it.
+<ParamField path="send(String topic, byte[] payload, String key)" type="CompletableFuture<SendResult>">
+  Asynchronously queues a raw byte payload with an optional routing key. Pass `null` for `key` to omit it.
 </ParamField>
 
 <ParamField path="isConnected()" type="boolean">
@@ -122,7 +126,7 @@ try (DRMQProducer producer = new DRMQProducer("localhost:9092,localhost:9093")) 
     producer.connect();
 
     // Send a plain string
-    DRMQProducer.SendResult result = producer.send("my-topic", "Hello, DRMQ!");
+    DRMQProducer.SendResult result = producer.send("my-topic", "Hello, DRMQ!").get();
 
     if (result.isSuccess()) {
         System.out.println("Message persisted at offset " + result.getOffset());
@@ -132,7 +136,7 @@ try (DRMQProducer producer = new DRMQProducer("localhost:9092,localhost:9093")) 
 
     // Send binary payload with a key
     byte[] data = loadOrderBytes();
-    DRMQProducer.SendResult keyedResult = producer.send("orders", data, "order-id-42");
+    DRMQProducer.SendResult keyedResult = producer.send("orders", data, "order-id-42").get();
     System.out.println("Keyed send success: " + keyedResult.isSuccess());
 
 } catch (IOException e) {
