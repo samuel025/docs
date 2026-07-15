@@ -1,0 +1,39 @@
+---
+title: "InfinityLog (Tiered Storage)"
+description: "Decouple storage costs from compute using S3/MinIO for infinite data retention"
+---
+
+DRMQ's **InfinityLog** architecture provides native Tiered Storage capabilities. By offloading older, inactive log segments to a secondary, cheaper object store (like Amazon S3 or MinIO), you can retain historical data infinitely without exhausting the local disk space of your broker nodes.
+
+## How It Works
+
+When Tiered Storage is enabled:
+1. The broker continues to write messages to the fast local SSD using standard `fsync`-backed WAL segments.
+2. Background tasks periodically copy sealed (closed) segments to the configured S3 bucket.
+3. If a consumer requests to fetch an offset or replay data from a timestamp that is no longer available on the local disk, DRMQ's `InfinityLogResolver` transparently pauses the consumer, downloads the required segments from S3, and resumes consumption.
+
+This mechanism ensures consumers experience at-least-once delivery semantics even when replaying data from months or years ago.
+
+## Configuring InfinityLog
+
+InfinityLog is configured in your broker's `server.properties` (or via CLI flags).
+
+```properties
+# S3 Tiered Storage Configuration
+s3.archive.bucket=drmq-archive
+s3.archive.region=us-east-1
+
+# Optional: Override the endpoint for MinIO or local S3-compatible storage
+#s3.archive.endpoint=http://localhost:9000
+```
+
+### Safety and Concurrency
+
+The `InfinityLogResolver` employs several safeguards:
+- **Pagination**: Transparently paginates S3 `ListObjectsV2` requests to support finding archived segments even if the bucket contains hundreds of thousands of files.
+- **Concurrent Recovery Protection**: Prevents "thundering herd" problems where multiple consumers requesting the same historical offset simultaneously crash the broker by downloading the same file. It utilizes strict lock-based concurrency and `.tmp` atomic file moves to serialize recovery perfectly.
+
+## Best Practices
+
+- **Retention Tuning**: Balance your `log.retention.ms` (local disk retention) with your expected consumer lag. Ideally, standard consumers should never need to touch S3. S3 should only be hit when a consumer explicitly seeks to the past.
+- **MinIO for On-Premise**: If deploying on-premise, configuring DRMQ with a local MinIO cluster provides all the API benefits of S3 without the egress costs.

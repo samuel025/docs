@@ -199,6 +199,10 @@ DRMQConsumer(String host, int port)
   Register interest in `topic` starting from an explicit `fromOffset`. Use this for replay scenarios — pass `0` to read the entire log from the beginning.
 </ParamField>
 
+<ParamField path="seekByTime(String topic, long timestamp)" type="void">
+  Subscribe to a topic starting from the earliest message that was persisted at or after the given UNIX `timestamp` (in milliseconds). Overrides the current offset for the topic. Excellent for time-based historical replays without knowing exact offsets.
+</ParamField>
+
 <ParamField path="poll()" type="List&lt;ConsumedMessage&gt;">
   Fetch up to 100 messages with a 1-second broker-side wait. Convenience wrapper around `poll(int, long)`.
 </ParamField>
@@ -308,6 +312,9 @@ try (DRMQConsumer consumer = new DRMQConsumer("localhost:9092", "my-group")) {
 
     // replay all messages from the very beginning of the log
     consumer.subscribe("my-topic", 0);
+
+    // alternatively, seek to exactly 1 hour ago
+    // consumer.seekByTime("my-topic", System.currentTimeMillis() - 3600000);
 
     while (true) {
         List<DRMQConsumer.ConsumedMessage> messages = consumer.poll(100, 1000);

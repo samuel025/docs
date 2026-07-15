@@ -9,7 +9,10 @@ Every DRMQ broker option is configured through command-line arguments passed at 
 ## Passing flags
 
 ```bash
-# Using Maven wrapper (development)
+# Using Maven wrapper with a config file (recommended for production)
+./mvnw -pl drmq-broker exec:java -Dexec.args="--config server.properties"
+
+# Using Maven wrapper with CLI flags (development)
 ./mvnw -pl drmq-broker exec:java \
   -Dexec.args="--node-id 1 --port 9092 --data-dir ./data-1 --peers 2:localhost:9093,3:localhost:9094"
 
@@ -24,6 +27,10 @@ java -jar drmq-broker.jar \
 
 <ParamField path="--node-id" type="string" default="standalone">
   A unique identifier for this broker node within the cluster. Use the alias `--id` if you prefer a shorter flag. In single-node mode the default value `standalone` is sufficient. In cluster mode every node must have a distinct `--node-id` that matches exactly what the other nodes list in their `--peers` arguments.
+</ParamField>
+
+<ParamField path="--config" type="string">
+  Path to a standard Java `.properties` file containing broker configuration. Any flags explicitly passed on the command line will override values defined in this file. Recommended for defining complex setups like InfinityLog Tiered Storage.
 </ParamField>
 
 ---
@@ -52,6 +59,22 @@ java -jar drmq-broker.jar \
 
 <ParamField path="--log-segment-fsync" type="boolean" default="true">
   Whether the broker strictly flushes writes to disk (`fsync`) before acknowledging them to the client. The default is `true` for maximum durability. Set to `false` to disable synchronous flushes, vastly improving throughput at the risk of data loss during a sudden power failure.
+</ParamField>
+
+---
+
+## InfinityLog (Tiered Storage)
+
+<ParamField path="--s3-archive-bucket" type="string">
+  The name of the S3 or MinIO bucket where DRMQ should archive old log segments. Providing this flag enables Tiered Storage.
+</ParamField>
+
+<ParamField path="--s3-archive-region" type="string" default="us-east-1">
+  The AWS region for the S3 bucket. Defaults to `us-east-1`.
+</ParamField>
+
+<ParamField path="--s3-archive-endpoint" type="string">
+  Optional custom endpoint URL for the S3 API. Use this to target a local MinIO deployment (e.g., `http://localhost:9000`).
 </ParamField>
 
 ---
@@ -168,3 +191,7 @@ This example uses:
 | `--metrics-port` | int | `9096` | Prometheus HTTP port |
 | `--metrics-path` | string | `/metrics` | Prometheus HTTP path |
 | `--log-segment-fsync` | boolean | `true` | Force disk flush per batch |
+| `--config` | string | _(none)_ | Path to properties file |
+| `--s3-archive-bucket` | string | _(none)_ | Bucket for Tiered Storage |
+| `--s3-archive-region` | string | `us-east-1` | Region for Tiered Storage |
+| `--s3-archive-endpoint`| string | _(none)_ | Custom S3 endpoint URL |

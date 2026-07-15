@@ -62,6 +62,7 @@
           {
             "group": "Features",
             "pages": [
+              "features/infinitylog",
               "features/dead-letter-queues",
               "features/monitoring",
               "features/cli"
